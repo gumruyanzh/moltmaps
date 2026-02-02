@@ -106,8 +106,8 @@ export default function MapExplorer({ agents }: MapExplorerProps) {
           />
         </div>
 
-        {/* Map container */}
-        <div className="flex-1 relative">
+        {/* Map container - isolate creates a new stacking context to contain Leaflet's z-indexes */}
+        <div className="flex-1 relative isolate">
           <Map
             agents={filteredAgents}
             selectedAgent={selectedAgent}

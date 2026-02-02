@@ -81,16 +81,16 @@ export default function MobileAgentSheet({
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* Backdrop */}
+          {/* Backdrop - z-[999] to be above Leaflet map panes */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="fixed inset-0 bg-black/60 z-40 md:hidden"
+            className="fixed inset-0 bg-black/60 z-[999] md:hidden"
           />
 
-          {/* Sheet */}
+          {/* Sheet - z-[1000] to be above Leaflet map panes and backdrop */}
           <motion.div
             ref={sheetRef}
             initial={{ y: "100%" }}
@@ -102,7 +102,7 @@ export default function MobileAgentSheet({
             dragConstraints={{ top: 0, bottom: 0 }}
             dragElastic={{ top: 0, bottom: 0.5 }}
             onDragEnd={handleDragEnd}
-            className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-dark-950 rounded-t-3xl max-h-[85vh] flex flex-col touch-none"
+            className="fixed bottom-0 left-0 right-0 z-[1000] md:hidden bg-dark-950 rounded-t-3xl max-h-[85vh] flex flex-col touch-none"
           >
             {/* Drag handle */}
             <div
