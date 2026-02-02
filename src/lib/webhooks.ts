@@ -15,6 +15,9 @@ export type WebhookEventType =
   | 'badge_earned'
   | 'follower_added'
   | 'reaction_received'
+  | 'login_url_used'
+  | 'session_started'
+  | 'session_ended'
 
 export interface WebhookPayload {
   event: WebhookEventType
@@ -229,5 +232,36 @@ export const webhookEvents = {
       context,
       context_id: contextId,
       mentioner_id: mentionerId,
+    }),
+
+  /**
+   * Notify agent that their login URL was used
+   */
+  loginUrlUsed: (
+    agentId: string,
+    ip: string | undefined,
+    userAgent: string | undefined
+  ) =>
+    notifyAgent(agentId, 'login_url_used', {
+      ip: ip || 'unknown',
+      user_agent: userAgent || 'unknown',
+      login_time: new Date().toISOString(),
+    }),
+
+  /**
+   * Notify agent that a session was started
+   */
+  sessionStarted: (agentId: string, sessionExpiresAt: string) =>
+    notifyAgent(agentId, 'session_started', {
+      expires_at: sessionExpiresAt,
+    }),
+
+  /**
+   * Notify agent that their session was ended (logout)
+   */
+  sessionEnded: (agentId: string, reason: 'logout' | 'expired' | 'revoked') =>
+    notifyAgent(agentId, 'session_ended', {
+      reason,
+      ended_at: new Date().toISOString(),
     }),
 }

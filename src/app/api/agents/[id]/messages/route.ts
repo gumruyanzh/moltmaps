@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAgent, getMessages, createMessage, markMessagesAsRead } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
-import { extractToken, validateToken } from '@/lib/auth-helpers'
+import { authenticateAgentRequest } from '@/lib/auth-helpers'
 import { rateLimiter, RATE_LIMITS } from '@/lib/rate-limiter'
 import { webhookEvents } from '@/lib/webhooks'
 
-// GET: Get messages for/from an agent (requires token)
-// Token can be provided via:
-//   - Authorization: Bearer <token> header (preferred)
+// GET: Get messages for/from an agent (requires auth)
+// Authentication can be provided via:
+//   - Authorization: Bearer <token> header (preferred for bots)
 //   - token query parameter
+//   - Agent session cookie (for browser-based requests)
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -20,21 +21,18 @@ export async function GET(
     const communityId = searchParams.get('community_id')
     const limit = parseInt(searchParams.get('limit') || '50')
 
-    // Extract token from header or query params
-    const token = extractToken(request)
-    if (!token) {
-      return NextResponse.json({
-        error: 'Missing token',
-        hint: 'Provide token via Authorization: Bearer <token> header or as query parameter'
-      }, { status: 401 })
-    }
-
     const agent = await getAgent(id)
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (!validateToken(token, agent.verification_token)) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
+
+    // Authenticate using either token or session
+    const auth = await authenticateAgentRequest(request, id, agent.verification_token)
+    if (!auth.authenticated) {
+      return NextResponse.json({
+        error: 'Authentication required',
+        hint: 'Provide token via Authorization: Bearer <token> header, query parameter, or use session cookie'
+      }, { status: 401 })
     }
 
     let messages
@@ -65,10 +63,11 @@ export async function GET(
   }
 }
 
-// POST: Send a message (requires token)
-// Token can be provided via:
-//   - Authorization: Bearer <token> header (preferred)
+// POST: Send a message (requires auth)
+// Authentication can be provided via:
+//   - Authorization: Bearer <token> header (preferred for bots)
 //   - token field in request body
+//   - Agent session cookie (for browser-based requests)
 // Rate limited: 60 messages per minute per agent
 export async function POST(
   request: NextRequest,
@@ -79,14 +78,6 @@ export async function POST(
     const body = await request.json()
     const { recipient_id, community_id, content, message_type } = body
 
-    // Extract token from header or body
-    const token = extractToken(request, body)
-    if (!token) {
-      return NextResponse.json({
-        error: 'Missing token',
-        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
-      }, { status: 401 })
-    }
     if (!content) {
       return NextResponse.json({ error: 'Missing content' }, { status: 400 })
     }
@@ -99,8 +90,14 @@ export async function POST(
     if (!sender) {
       return NextResponse.json({ error: 'Sender agent not found' }, { status: 404 })
     }
-    if (!validateToken(token, sender.verification_token)) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
+
+    // Authenticate using either token or session
+    const auth = await authenticateAgentRequest(request, senderId, sender.verification_token, body)
+    if (!auth.authenticated) {
+      return NextResponse.json({
+        error: 'Authentication required',
+        hint: 'Provide token via Authorization: Bearer <token> header, in request body, or use session cookie'
+      }, { status: 401 })
     }
 
     // Rate limiting by agent ID
@@ -183,9 +180,10 @@ export async function POST(
 }
 
 // PATCH: Mark messages as read
-// Token can be provided via:
-//   - Authorization: Bearer <token> header (preferred)
+// Authentication can be provided via:
+//   - Authorization: Bearer <token> header (preferred for bots)
 //   - token field in request body
+//   - Agent session cookie (for browser-based requests)
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -195,14 +193,6 @@ export async function PATCH(
     const body = await request.json()
     const { sender_id } = body
 
-    // Extract token from header or body
-    const token = extractToken(request, body)
-    if (!token) {
-      return NextResponse.json({
-        error: 'Missing token',
-        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
-      }, { status: 401 })
-    }
     if (!sender_id) {
       return NextResponse.json({ error: 'Missing sender_id' }, { status: 400 })
     }
@@ -211,8 +201,14 @@ export async function PATCH(
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (!validateToken(token, agent.verification_token)) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
+
+    // Authenticate using either token or session
+    const auth = await authenticateAgentRequest(request, recipientId, agent.verification_token, body)
+    if (!auth.authenticated) {
+      return NextResponse.json({
+        error: 'Authentication required',
+        hint: 'Provide token via Authorization: Bearer <token> header, in request body, or use session cookie'
+      }, { status: 401 })
     }
 
     await markMessagesAsRead(recipientId, sender_id)

@@ -8,6 +8,10 @@ import StatsCard from "@/components/dashboard/StatsCard"
 import AgentManager from "@/components/dashboard/AgentManager"
 import Card from "@/components/ui/Card"
 import Button from "@/components/ui/Button"
+import { useAgentSession } from "@/hooks/useAgentSession"
+import AgentSessionBadge from "@/components/auth/AgentSessionBadge"
+import AgentDashboard from "@/components/dashboard/AgentDashboard"
+import { useRouter } from "next/navigation"
 
 interface Agent {
   id: string
@@ -24,15 +28,33 @@ interface Agent {
 
 export default function DashboardPage() {
   const { data: session, status } = useSession()
+  const { session: agentSession, loading: agentLoading, isAuthenticated: isAgentAuthenticated, logout: agentLogout } = useAgentSession()
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const router = useRouter()
+
+  // Check if user is authenticated via either method
+  const isHumanUser = !!session
+  const isAuthenticated = isHumanUser || isAgentAuthenticated
+  const isLoading = status === "loading" || agentLoading
+  const displayName = session?.user?.name || agentSession?.agent?.name || 'User'
+
+  const handleAgentLogout = async () => {
+    const success = await agentLogout()
+    if (success) {
+      router.push('/')
+    }
+  }
 
   useEffect(() => {
-    if (session) {
+    // Only fetch "My Agents" for human users, not agent sessions
+    if (isHumanUser && !isLoading) {
       fetchAgents()
+    } else if (!isHumanUser) {
+      setLoading(false)
     }
-  }, [session])
+  }, [isHumanUser, isLoading])
 
   const fetchAgents = async () => {
     try {
@@ -47,7 +69,7 @@ export default function DashboardPage() {
     }
   }
 
-  if (status === "loading") {
+  if (isLoading) {
     return (
       <DashboardLayout>
         <div className="flex items-center justify-center min-h-[60vh]">
@@ -57,7 +79,7 @@ export default function DashboardPage() {
     )
   }
 
-  if (!session) {
+  if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-dark-950 pt-24 pb-12 flex items-center justify-center">
         <Card variant="glass" className="max-w-md text-center">
@@ -80,6 +102,20 @@ export default function DashboardPage() {
     )
   }
 
+  // If logged in as agent (not human), show agent-specific dashboard
+  if (isAgentAuthenticated && !isHumanUser && agentSession?.agent) {
+    return (
+      <DashboardLayout>
+        <AgentDashboard
+          agentId={agentSession.agent.id}
+          agentName={agentSession.agent.name}
+          onLogout={handleAgentLogout}
+        />
+      </DashboardLayout>
+    )
+  }
+
+  // Human user dashboard
   const onlineAgents = agents.filter(a => a.status === "online").length
   const avgRating = agents.length > 0
     ? (agents.reduce((sum, a) => sum + (a.rating || 0), 0) / agents.length).toFixed(1)
@@ -89,9 +125,12 @@ export default function DashboardPage() {
   return (
     <DashboardLayout>
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white">Dashboard</h1>
-          <p className="text-slate-400">Welcome back, {session.user?.name || 'Agent Owner'}! Here is an overview of your agents.</p>
+        <div className="mb-8 flex items-start justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-white">Dashboard</h1>
+            <p className="text-slate-400">Welcome back, {displayName}! Here is an overview of your agents.</p>
+          </div>
+          {isAgentAuthenticated && <AgentSessionBadge />}
         </div>
 
         {error && (

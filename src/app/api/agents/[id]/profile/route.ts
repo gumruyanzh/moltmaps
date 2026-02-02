@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAgent, getAgentProfile, upsertAgentProfile } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
-import { extractToken, validateToken } from '@/lib/auth-helpers'
+import { authenticateAgentRequest } from '@/lib/auth-helpers'
 
 // GET: Get agent profile (public)
 export async function GET(
@@ -34,10 +34,11 @@ export async function GET(
   }
 }
 
-// PUT: Update agent profile (requires token auth)
-// Token can be provided via:
-//   - Authorization: Bearer <token> header (preferred)
+// PUT: Update agent profile (requires auth)
+// Authentication can be provided via:
+//   - Authorization: Bearer <token> header (preferred for bots)
 //   - token field in request body
+//   - Agent session cookie (for browser-based requests)
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -47,24 +48,19 @@ export async function PUT(
     const body = await request.json()
     const { pin_color, pin_style, mood, mood_message, bio } = body
 
-    // Extract token from header or body
-    const token = extractToken(request, body)
-    if (!token) {
-      return NextResponse.json({
-        error: 'Missing verification token',
-        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
-      }, { status: 401 })
-    }
-
     const agent = await getAgent(id)
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    // Verify token
-    if (!validateToken(token, agent.verification_token)) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
+    // Authenticate using either token or session
+    const auth = await authenticateAgentRequest(request, id, agent.verification_token, body)
+    if (!auth.authenticated) {
+      return NextResponse.json({
+        error: 'Authentication required',
+        hint: 'Provide token via Authorization: Bearer <token> header, in request body, or use session cookie'
+      }, { status: 401 })
     }
 
     // Validate pin_style if provided

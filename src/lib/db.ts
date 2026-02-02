@@ -43,6 +43,7 @@ export interface Agent {
   tasks_completed: number
   rating: number
   location_name: string | null
+  sessions_invalidated_at: string | null
 }
 
 export interface AgentProfile {
@@ -130,6 +131,15 @@ export interface AgentLevel {
   updated_at: string
 }
 
+export interface LoginToken {
+  id: string
+  agent_id: string
+  token: string
+  expires_at: string
+  used_at: string | null
+  created_at: string
+}
+
 // Initialize database tables
 export async function initDatabase() {
   const client = await pool.connect()
@@ -164,6 +174,14 @@ export async function initDatabase() {
         rating REAL DEFAULT 0.0,
         location_name TEXT
       );
+
+      -- Add sessions_invalidated_at column if it doesn't exist
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='sessions_invalidated_at') THEN
+          ALTER TABLE agents ADD COLUMN sessions_invalidated_at TIMESTAMP;
+        END IF;
+      END $$;
 
       CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
       CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id);
@@ -285,6 +303,19 @@ export async function initDatabase() {
         badges TEXT[] DEFAULT ARRAY[]::TEXT[],
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      -- Login tokens for URL-based auto-login
+      CREATE TABLE IF NOT EXISTS login_tokens (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        expires_at TIMESTAMP NOT NULL,
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_login_tokens_agent ON login_tokens(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_login_tokens_token ON login_tokens(token);
+      CREATE INDEX IF NOT EXISTS idx_login_tokens_expires ON login_tokens(expires_at);
     `)
   } finally {
     client.release()
@@ -956,6 +987,142 @@ export async function addBadge(agentId: string, badge: string): Promise<AgentLev
     [agentId, badge]
   )
   return result.rows[0]
+}
+
+// ============= Login Token Functions =============
+
+/**
+ * Create a one-time login token for an agent
+ * Token expires after specified minutes (default: 10 minutes)
+ */
+export async function createLoginToken(
+  agentId: string,
+  expiresInMinutes: number = 10
+): Promise<LoginToken> {
+  const crypto = await import('crypto')
+
+  const id = `lt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  // Generate a secure random token
+  const token = crypto.randomBytes(32).toString('hex')
+  const expiresAt = new Date(Date.now() + expiresInMinutes * 60 * 1000)
+
+  const result = await pool.query(
+    `INSERT INTO login_tokens (id, agent_id, token, expires_at)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [id, agentId, token, expiresAt.toISOString()]
+  )
+  return result.rows[0]
+}
+
+/**
+ * Validate and consume a login token
+ * Returns the agent_id if valid, null otherwise
+ * Marks token as used to prevent reuse
+ */
+export async function validateAndConsumeLoginToken(token: string): Promise<{
+  valid: boolean
+  agent_id?: string
+  error?: string
+}> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // Find the token
+    const result = await client.query(
+      `SELECT * FROM login_tokens WHERE token = $1`,
+      [token]
+    )
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return { valid: false, error: 'Token not found' }
+    }
+
+    const loginToken: LoginToken = result.rows[0]
+
+    // Check if already used
+    if (loginToken.used_at) {
+      await client.query('ROLLBACK')
+      return { valid: false, error: 'Token already used' }
+    }
+
+    // Check if expired
+    if (new Date(loginToken.expires_at) < new Date()) {
+      await client.query('ROLLBACK')
+      return { valid: false, error: 'Token expired' }
+    }
+
+    // Mark as used
+    await client.query(
+      `UPDATE login_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [loginToken.id]
+    )
+
+    await client.query('COMMIT')
+    return { valid: true, agent_id: loginToken.agent_id }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Get login token by token string (for validation without consuming)
+ */
+export async function getLoginToken(token: string): Promise<LoginToken | null> {
+  const result = await pool.query(
+    `SELECT * FROM login_tokens WHERE token = $1`,
+    [token]
+  )
+  return result.rows[0] || null
+}
+
+/**
+ * Clean up expired login tokens (for maintenance)
+ */
+export async function cleanupExpiredLoginTokens(): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM login_tokens WHERE expires_at < CURRENT_TIMESTAMP`
+  )
+  return result.rowCount ?? 0
+}
+
+/**
+ * Revoke all login tokens for an agent
+ */
+export async function revokeAgentLoginTokens(agentId: string): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM login_tokens WHERE agent_id = $1 AND used_at IS NULL`,
+    [agentId]
+  )
+  return result.rowCount ?? 0
+}
+
+/**
+ * Invalidate all sessions for an agent
+ * Sets a timestamp that makes all session tokens issued before this time invalid
+ */
+export async function invalidateAllAgentSessions(agentId: string): Promise<string> {
+  const now = new Date().toISOString()
+  await pool.query(
+    `UPDATE agents SET sessions_invalidated_at = $1 WHERE id = $2`,
+    [now, agentId]
+  )
+  return now
+}
+
+/**
+ * Get the session invalidation timestamp for an agent
+ */
+export async function getAgentSessionInvalidationTime(agentId: string): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT sessions_invalidated_at FROM agents WHERE id = $1`,
+    [agentId]
+  )
+  return result.rows[0]?.sessions_invalidated_at || null
 }
 
 export default pool

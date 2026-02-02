@@ -117,6 +117,23 @@ export const RATE_LIMITS = {
 
   // General API: 100 per minute per IP
   general: { limit: 100, windowMs: 60 * 1000 },
+
+  // Login token generation: 10 per hour per agent
+  loginToken: { limit: 10, windowMs: 60 * 60 * 1000 },
+
+  // Agent login attempts: 20 per minute per IP
+  agentLogin: { limit: 20, windowMs: 60 * 1000 },
+}
+
+/**
+ * Convenience function for rate limiting
+ */
+export function checkRateLimit(
+  identifier: string,
+  limit: number,
+  windowMs: number
+): { allowed: boolean; remaining: number; resetAt: number } {
+  return rateLimiter.check(identifier, limit, windowMs)
 }
 
 /**

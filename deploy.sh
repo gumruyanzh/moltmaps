@@ -1,84 +1,106 @@
 #!/bin/bash
+
+# MoltMaps Deployment Script
+# Usage: ./deploy.sh [--skip-build]
+
 set -e
 
-echo "=== MoltMaps Deployment Script ==="
+# Configuration
+SERVER="moltmaps"
+REMOTE_PATH="/var/www/moltmaps"
+LOCAL_PATH="."
 
-# Create required directories
-mkdir -p certbot/conf certbot/www
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-# Check if SSL certificates exist
-if [ ! -f "certbot/conf/live/moltmaps.com/fullchain.pem" ]; then
-    echo "SSL certificates not found. Running initial setup..."
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  MoltMaps Deployment Script${NC}"
+echo -e "${GREEN}========================================${NC}"
 
-    # Use initial nginx config (HTTP only)
-    cp nginx-init.conf nginx.conf.bak
-    cp nginx-init.conf nginx.conf
-
-    # Stop any existing containers
-    docker compose down 2>/dev/null || true
-
-    # Start db and app first
-    docker compose up -d db
-    sleep 10
-    docker compose up -d app
-    sleep 5
-
-    # Start nginx with HTTP only config
-    docker compose up -d nginx
-    sleep 5
-
-    # Get SSL certificate
-    echo "Requesting SSL certificate from Let's Encrypt..."
-    docker compose run --rm certbot certonly \
-        --webroot \
-        --webroot-path=/var/www/certbot \
-        --email admin@moltmaps.com \
-        --agree-tos \
-        --no-eff-email \
-        -d moltmaps.com \
-        -d www.moltmaps.com
-
-    # Restore full nginx config with SSL
-    mv nginx.conf.bak nginx.conf
-
-    # Restart nginx with SSL config
-    docker compose restart nginx
-else
-    echo "SSL certificates found. Starting services..."
-    docker compose down 2>/dev/null || true
-    docker compose up -d --build
+# Check if we should skip build
+SKIP_BUILD=false
+if [ "$1" == "--skip-build" ]; then
+    SKIP_BUILD=true
+    echo -e "${YELLOW}Skipping build step...${NC}"
 fi
 
-echo ""
-echo "=== Waiting for services to be ready... ==="
-sleep 15
+# Step 1: Build the project (unless skipped)
+if [ "$SKIP_BUILD" = false ]; then
+    echo -e "\n${YELLOW}Step 1: Building project...${NC}"
+    npm run build
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Build failed! Aborting deployment.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Build successful!${NC}"
+else
+    echo -e "\n${YELLOW}Step 1: Skipped build${NC}"
+fi
 
-# Initialize database
-ADMIN_SECRET=$(grep ADMIN_SECRET .env | cut -d '=' -f2)
-echo "Initializing database..."
-docker exec moltmaps-app node -e "
-const http = require('http');
-const data = JSON.stringify({secret: '$ADMIN_SECRET'});
-const req = http.request({
-    hostname: 'localhost',
-    port: 3000,
-    path: '/api/init',
-    method: 'POST',
-    headers: {'Content-Type': 'application/json', 'Content-Length': data.length}
-}, res => {
-    let body = '';
-    res.on('data', chunk => body += chunk);
-    res.on('end', () => console.log('Init response:', body));
-});
-req.write(data);
-req.end();
-" 2>/dev/null || echo "Database may already be initialized"
+# Step 2: Sync files to server
+echo -e "\n${YELLOW}Step 2: Syncing files to server...${NC}"
 
-echo ""
-echo "=== Deployment Complete ==="
-echo "Services running:"
-docker compose ps
+rsync -avz --delete \
+    --exclude 'node_modules' \
+    --exclude '.git' \
+    --exclude '.env.local' \
+    --exclude '.env' \
+    --exclude '.next/cache' \
+    --exclude '*.log' \
+    --exclude '.DS_Store' \
+    "$LOCAL_PATH/" "$SERVER:$REMOTE_PATH/"
 
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Rsync failed! Check your connection.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}Files synced successfully!${NC}"
+
+# Step 3: Install dependencies and restart on server
+echo -e "\n${YELLOW}Step 3: Installing dependencies and restarting...${NC}"
+
+ssh "$SERVER" << 'ENDSSH'
+    cd /var/www/moltmaps
+
+    echo "Installing dependencies..."
+    npm install --production
+
+    echo "Running database migrations..."
+    # Initialize/update database tables
+    curl -s -X POST http://localhost:3000/api/maintenance/init-db || true
+
+    echo "Restarting application..."
+    pm2 restart moltmaps || pm2 start npm --name "moltmaps" -- start
+
+    echo "Checking status..."
+    pm2 status moltmaps
+ENDSSH
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Remote commands failed!${NC}"
+    exit 1
+fi
+
+# Step 4: Verify deployment
+echo -e "\n${YELLOW}Step 4: Verifying deployment...${NC}"
+sleep 3
+
+# Try to hit the status endpoint
+HEALTH_CHECK=$(ssh "$SERVER" "curl -s http://localhost:3000/api/status | head -c 100" 2>/dev/null)
+
+if [[ "$HEALTH_CHECK" == *"ready"* ]]; then
+    echo -e "${GREEN}Health check passed!${NC}"
+else
+    echo -e "${YELLOW}Warning: Health check may have failed. Please verify manually.${NC}"
+    echo "Response: $HEALTH_CHECK"
+fi
+
+echo -e "\n${GREEN}========================================${NC}"
+echo -e "${GREEN}  Deployment Complete!${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "Server: ${YELLOW}$SERVER${NC}"
+echo -e "Path: ${YELLOW}$REMOTE_PATH${NC}"
 echo ""
-echo "View logs with: docker compose logs -f"
-echo "Site should be available at: https://moltmaps.com"
