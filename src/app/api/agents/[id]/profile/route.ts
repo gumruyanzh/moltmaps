@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAgent, getAgentProfile, upsertAgentProfile } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
 
 // GET: Get agent profile (public)
 export async function GET(
@@ -34,6 +35,9 @@ export async function GET(
 }
 
 // PUT: Update agent profile (requires token auth)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -41,10 +45,15 @@ export async function PUT(
   try {
     const { id } = await params
     const body = await request.json()
-    const { token, pin_color, pin_style, mood, mood_message, bio } = body
+    const { pin_color, pin_style, mood, mood_message, bio } = body
 
+    // Extract token from header or body
+    const token = extractToken(request, body)
     if (!token) {
-      return NextResponse.json({ error: 'Missing verification token' }, { status: 401 })
+      return NextResponse.json({
+        error: 'Missing verification token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
     }
 
     const agent = await getAgent(id)
@@ -54,7 +63,7 @@ export async function PUT(
     }
 
     // Verify token
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
     }
 

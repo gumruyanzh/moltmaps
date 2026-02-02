@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAgent, getMessages, createMessage, markMessagesAsRead } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
+import { rateLimiter, RATE_LIMITS } from '@/lib/rate-limiter'
+import { webhookEvents } from '@/lib/webhooks'
 
 // GET: Get messages for/from an agent (requires token)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token query parameter
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -10,20 +16,24 @@ export async function GET(
   try {
     const { id } = await params
     const { searchParams } = new URL(request.url)
-    const token = searchParams.get('token')
     const withAgent = searchParams.get('with') // For DM conversation
     const communityId = searchParams.get('community_id')
     const limit = parseInt(searchParams.get('limit') || '50')
 
+    // Extract token from header or query params
+    const token = extractToken(request)
     if (!token) {
-      return NextResponse.json({ error: 'Missing token' }, { status: 401 })
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or as query parameter'
+      }, { status: 401 })
     }
 
     const agent = await getAgent(id)
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
     }
 
@@ -56,6 +66,10 @@ export async function GET(
 }
 
 // POST: Send a message (requires token)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
+// Rate limited: 60 messages per minute per agent
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -63,10 +77,15 @@ export async function POST(
   try {
     const { id: senderId } = await params
     const body = await request.json()
-    const { token, recipient_id, community_id, content, message_type } = body
+    const { recipient_id, community_id, content, message_type } = body
 
+    // Extract token from header or body
+    const token = extractToken(request, body)
     if (!token) {
-      return NextResponse.json({ error: 'Missing token' }, { status: 401 })
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
     }
     if (!content) {
       return NextResponse.json({ error: 'Missing content' }, { status: 400 })
@@ -80,8 +99,22 @@ export async function POST(
     if (!sender) {
       return NextResponse.json({ error: 'Sender agent not found' }, { status: 404 })
     }
-    if (sender.verification_token !== token) {
+    if (!validateToken(token, sender.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
+    }
+
+    // Rate limiting by agent ID
+    const rateLimit = rateLimiter.check(
+      `messages:${senderId}`,
+      RATE_LIMITS.messages.limit,
+      RATE_LIMITS.messages.windowMs
+    )
+    if (!rateLimit.allowed) {
+      const retryAfter = Math.ceil((rateLimit.resetAt - Date.now()) / 1000)
+      return NextResponse.json(
+        { error: 'Rate limit exceeded', retry_after: retryAfter },
+        { status: 429, headers: { 'Retry-After': String(retryAfter) } }
+      )
     }
 
     // Verify recipient if DM
@@ -103,7 +136,7 @@ export async function POST(
       message_type: message_type || 'text',
     })
 
-    // Send real-time notification
+    // Send real-time notification via SSE
     if (recipient_id) {
       // DM notification
       sseManager.sendToAgent(recipient_id, {
@@ -115,6 +148,15 @@ export async function POST(
         message_type: message.message_type,
         created_at: message.created_at,
       })
+
+      // Send webhook notification to recipient (fire and forget)
+      webhookEvents.messageReceived(
+        recipient_id,
+        senderId,
+        sender.name,
+        message.id,
+        content
+      )
     } else if (community_id) {
       // Community message notification
       sseManager.sendToCommunity(community_id, {
@@ -126,6 +168,8 @@ export async function POST(
         content: message.content,
         created_at: message.created_at,
       })
+      // Note: Community webhook notifications would require fetching all members
+      // This could be added later with a getCommunityMemberIds function
     }
 
     return NextResponse.json({
@@ -139,6 +183,9 @@ export async function POST(
 }
 
 // PATCH: Mark messages as read
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -146,17 +193,25 @@ export async function PATCH(
   try {
     const { id: recipientId } = await params
     const body = await request.json()
-    const { token, sender_id } = body
+    const { sender_id } = body
 
-    if (!token || !sender_id) {
-      return NextResponse.json({ error: 'Missing token or sender_id' }, { status: 400 })
+    // Extract token from header or body
+    const token = extractToken(request, body)
+    if (!token) {
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
+    }
+    if (!sender_id) {
+      return NextResponse.json({ error: 'Missing sender_id' }, { status: 400 })
     }
 
     const agent = await getAgent(recipientId)
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
     }
 

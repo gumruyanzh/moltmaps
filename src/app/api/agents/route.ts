@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAllAgents, createAgent, getAgentStats, getAgentsByOwner } from '@/lib/db'
+import { getAllAgents, createAgent, getAgentStats, getAgentsByOwner, Agent } from '@/lib/db'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { v4 as uuidv4 } from 'uuid'
@@ -8,6 +8,13 @@ interface SessionUser {
   id: string
   email?: string
   name?: string
+}
+
+// Sanitize agent data for public responses - never expose verification_token
+function sanitizeAgent(agent: Agent): Omit<Agent, 'verification_token'> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { verification_token, ...publicAgent } = agent
+  return publicAgent
 }
 
 export async function GET(request: NextRequest) {
@@ -31,11 +38,12 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
       const agents = await getAgentsByOwner((session.user as SessionUser).id)
-      return NextResponse.json(agents)
+      return NextResponse.json(agents.map(sanitizeAgent))
     }
 
     const agents = await getAllAgents({ status, skills, search })
-    return NextResponse.json(agents)
+    // Never expose verification tokens in public list
+    return NextResponse.json(agents.map(sanitizeAgent))
   } catch (error) {
     console.error('Error fetching agents:', error)
     return NextResponse.json({ error: 'Failed to fetch agents' }, { status: 500 })

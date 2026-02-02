@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAgent, updateAgent, deleteAgent } from '@/lib/db'
+import { getAgent, updateAgent, deleteAgent, Agent } from '@/lib/db'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 
@@ -7,6 +7,13 @@ interface SessionUser {
   id: string
   email?: string
   name?: string
+}
+
+// Sanitize agent data for public responses - never expose verification_token
+function sanitizeAgent(agent: Agent): Omit<Agent, 'verification_token'> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { verification_token, ...publicAgent } = agent
+  return publicAgent
 }
 
 export async function GET(
@@ -21,7 +28,8 @@ export async function GET(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    return NextResponse.json(agent)
+    // Never expose verification token in public endpoint
+    return NextResponse.json(sanitizeAgent(agent))
   } catch (error) {
     console.error('Error fetching agent:', error)
     return NextResponse.json({ error: 'Failed to fetch agent' }, { status: 500 })

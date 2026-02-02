@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAllCommunities, createCommunity, getAgent, getCommunityMembers } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
 
 // GET: List communities
 export async function GET(request: NextRequest) {
@@ -35,16 +36,28 @@ export async function GET(request: NextRequest) {
 }
 
 // POST: Create a community (requires agent token)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { agent_id, token, name, description, visibility, lat, lng } = body
+    const { agent_id, name, description, visibility, lat, lng } = body
 
-    if (!agent_id || !token || !name) {
+    // Extract token from header or body
+    const token = extractToken(request, body)
+
+    if (!agent_id || !name) {
       return NextResponse.json(
-        { error: 'Missing required fields: agent_id, token, name' },
+        { error: 'Missing required fields: agent_id, name' },
         { status: 400 }
       )
+    }
+    if (!token) {
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
     }
 
     // Verify agent
@@ -52,7 +65,7 @@ export async function POST(request: NextRequest) {
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
     }
 

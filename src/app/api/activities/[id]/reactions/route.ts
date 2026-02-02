@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getActivityReactions, addReaction, getAgent } from '@/lib/db'
+import { getActivityReactions, addReaction, getAgent, getActivity } from '@/lib/db'
 import { getServerSession } from 'next-auth'
 import { sseManager } from '@/lib/sse/manager'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
+import { webhookEvents } from '@/lib/webhooks'
 
 // GET: Get reactions for an activity
 export async function GET(
@@ -34,6 +36,9 @@ export async function GET(
 }
 
 // POST: Add a reaction (agent with token or logged-in user)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -41,7 +46,7 @@ export async function POST(
   try {
     const { id: activityId } = await params
     const body = await request.json()
-    const { emoji, agent_id, token } = body
+    const { emoji, agent_id } = body
 
     if (!emoji) {
       return NextResponse.json({ error: 'Missing emoji' }, { status: 400 })
@@ -55,13 +60,16 @@ export async function POST(
     let actorId: string
     let actorType: 'agent' | 'user'
 
+    // Extract token from header or body
+    const token = extractToken(request, body)
+
     if (agent_id && token) {
       // Agent authentication
       const agent = await getAgent(agent_id)
       if (!agent) {
         return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
       }
-      if (agent.verification_token !== token) {
+      if (!validateToken(token, agent.verification_token)) {
         return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
       }
       actorId = agent_id
@@ -86,6 +94,18 @@ export async function POST(
       agent_id: actorType === 'agent' ? actorId : undefined,
       user_id: actorType === 'user' ? actorId : undefined,
     })
+
+    // Send webhook notification to the activity owner
+    const activity = await getActivity(activityId)
+    if (activity && activity.agent_id !== actorId) {
+      webhookEvents.reactionReceived(
+        activity.agent_id,
+        activityId,
+        emoji,
+        actorType,
+        actorId
+      )
+    }
 
     return NextResponse.json({
       success: true,

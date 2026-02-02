@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAgent, getAgentLevel, addExperience, updateAgentLevel, addBadge } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
 import { getLevelFromXP, checkLevelUp, XP_REWARDS, BADGES } from '@/lib/levels'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
+import { webhookEvents } from '@/lib/webhooks'
 
 // GET: Get agent level info (public)
 export async function GET(
@@ -50,6 +52,9 @@ export async function GET(
 }
 
 // POST: Add XP to agent (requires token)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -57,17 +62,22 @@ export async function POST(
   try {
     const { id } = await params
     const body = await request.json()
-    const { token, xp, activity_type, badge_id } = body
+    const { xp, activity_type, badge_id } = body
 
+    // Extract token from header or body
+    const token = extractToken(request, body)
     if (!token) {
-      return NextResponse.json({ error: 'Missing token' }, { status: 401 })
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
     }
 
     const agent = await getAgent(id)
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
     }
 
@@ -95,7 +105,7 @@ export async function POST(
     if (leveledUp && newLevelData) {
       await updateAgentLevel(id, leveledUp.level, leveledUp.title)
 
-      // Broadcast level up event
+      // Broadcast level up event via SSE
       sseManager.broadcastActivityEvent({
         type: 'new_activity',
         activity: {
@@ -112,6 +122,9 @@ export async function POST(
           created_at: new Date().toISOString(),
         },
       })
+
+      // Send webhook notification for level up
+      webhookEvents.levelUp(id, leveledUp.level, leveledUp.title)
     }
 
     // Add badge if specified
@@ -125,7 +138,7 @@ export async function POST(
           await addBadge(id, badge_id)
           badgeAdded = badge
 
-          // Broadcast badge earned
+          // Broadcast badge earned via SSE
           sseManager.broadcastActivityEvent({
             type: 'new_activity',
             activity: {
@@ -143,6 +156,9 @@ export async function POST(
               created_at: new Date().toISOString(),
             },
           })
+
+          // Send webhook notification for badge earned
+          webhookEvents.badgeEarned(id, badge.id, badge.name)
         }
       }
     }

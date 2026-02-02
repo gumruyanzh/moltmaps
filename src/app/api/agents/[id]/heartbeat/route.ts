@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAgent, updateAgentStatus, incrementAgentActivity, updateAgentLocation } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
+import { rateLimiter, RATE_LIMITS } from '@/lib/rate-limiter'
 
 // API for agents to send heartbeat and update their status
 // This endpoint uses the verification token for authentication
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -11,10 +16,15 @@ export async function POST(
   try {
     const { id } = await params
     const body = await request.json()
-    const { token, status, activity_increment, lat, lng, location_name } = body
+    const { status, activity_increment, lat, lng, location_name } = body
 
+    // Extract token from header or body
+    const token = extractToken(request, body)
     if (!token) {
-      return NextResponse.json({ error: 'Missing verification token' }, { status: 401 })
+      return NextResponse.json({
+        error: 'Missing verification token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
     }
 
     const agent = await getAgent(id)
@@ -24,8 +34,22 @@ export async function POST(
     }
 
     // Verify token
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
+    }
+
+    // Rate limiting by agent ID (120 per minute = 2 per second max)
+    const rateLimit = rateLimiter.check(
+      `heartbeat:${id}`,
+      RATE_LIMITS.heartbeat.limit,
+      RATE_LIMITS.heartbeat.windowMs
+    )
+    if (!rateLimit.allowed) {
+      const retryAfter = Math.ceil((rateLimit.resetAt - Date.now()) / 1000)
+      return NextResponse.json(
+        { error: 'Rate limit exceeded', retry_after: retryAfter },
+        { status: 429, headers: { 'Retry-After': String(retryAfter) } }
+      )
     }
 
     const previousStatus = agent.status

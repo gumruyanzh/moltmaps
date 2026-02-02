@@ -540,6 +540,11 @@ export async function upsertAgentProfile(
 
 // ============= Activity Functions =============
 
+export async function getActivity(id: string): Promise<Activity | null> {
+  const result = await pool.query('SELECT * FROM activities WHERE id = $1', [id])
+  return result.rows[0] || null
+}
+
 export async function createActivity(activity: {
   id: string
   agent_id: string

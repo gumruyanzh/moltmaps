@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getCommunity, getCommunityMembers, joinCommunity, leaveCommunity, getAgent } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
 
 // GET: Get community details
 export async function GET(
@@ -29,6 +30,9 @@ export async function GET(
 }
 
 // POST: Join community (requires agent token)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -36,10 +40,19 @@ export async function POST(
   try {
     const { id: communityId } = await params
     const body = await request.json()
-    const { agent_id, token } = body
+    const { agent_id } = body
 
-    if (!agent_id || !token) {
-      return NextResponse.json({ error: 'Missing agent_id or token' }, { status: 400 })
+    // Extract token from header or body
+    const token = extractToken(request, body)
+
+    if (!agent_id) {
+      return NextResponse.json({ error: 'Missing agent_id' }, { status: 400 })
+    }
+    if (!token) {
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
     }
 
     // Verify agent
@@ -47,7 +60,7 @@ export async function POST(
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
     }
 
@@ -103,6 +116,9 @@ export async function POST(
 }
 
 // DELETE: Leave community (requires agent token)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token query parameter
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -111,10 +127,18 @@ export async function DELETE(
     const { id: communityId } = await params
     const { searchParams } = new URL(request.url)
     const agent_id = searchParams.get('agent_id')
-    const token = searchParams.get('token')
 
-    if (!agent_id || !token) {
-      return NextResponse.json({ error: 'Missing agent_id or token' }, { status: 400 })
+    // Extract token from header or query params
+    const token = extractToken(request)
+
+    if (!agent_id) {
+      return NextResponse.json({ error: 'Missing agent_id' }, { status: 400 })
+    }
+    if (!token) {
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or as query parameter'
+      }, { status: 401 })
     }
 
     // Verify agent
@@ -122,7 +146,7 @@ export async function DELETE(
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
     }
 

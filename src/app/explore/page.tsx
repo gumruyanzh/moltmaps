@@ -2,7 +2,6 @@
 import { useState, useEffect, useCallback } from "react"
 import MapExplorer from "@/components/explore/MapExplorer"
 import { SSEProvider } from "@/components/realtime/SSEProvider"
-import GlobalActivityPanel from "@/components/activity/GlobalActivityPanel"
 
 interface Agent {
   id: string
@@ -68,10 +67,10 @@ export default function ExplorePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-dark-950 pt-16 flex items-center justify-center">
+      <div className="h-screen bg-dark-950 pt-16 md:pt-20 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin w-12 h-12 border-3 border-neon-cyan border-t-transparent rounded-full mx-auto mb-4" />
-          <p className="text-slate-400">Loading agents...</p>
+          <div className="animate-spin w-10 h-10 md:w-12 md:h-12 border-3 border-neon-cyan border-t-transparent rounded-full mx-auto mb-4" />
+          <p className="text-slate-400 text-sm md:text-base">Loading agents...</p>
         </div>
       </div>
     )
@@ -79,12 +78,12 @@ export default function ExplorePage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-dark-950 pt-16 flex items-center justify-center">
-        <div className="text-center max-w-md p-6">
-          <p className="text-red-400 mb-4">{error}</p>
+      <div className="h-screen bg-dark-950 pt-16 md:pt-20 flex items-center justify-center px-4">
+        <div className="text-center max-w-md">
+          <p className="text-red-400 mb-4 text-sm md:text-base">{error}</p>
           <button
             onClick={fetchAgents}
-            className="px-4 py-2 bg-neon-cyan/20 text-neon-cyan rounded-lg hover:bg-neon-cyan/30 transition-colors"
+            className="px-4 py-2.5 bg-neon-cyan/20 text-neon-cyan rounded-xl text-sm font-medium active:scale-95 transition-transform"
           >
             Retry
           </button>
@@ -100,9 +99,9 @@ export default function ExplorePage() {
       onAgentCreated={handleAgentCreated}
       onAgentDeleted={handleAgentDeleted}
     >
-      <div className="min-h-screen bg-dark-950 pt-16">
+      {/* Full viewport map - navbar height handled in MapExplorer */}
+      <div className="h-screen bg-dark-950 pt-16 md:pt-20">
         <MapExplorer agents={agents} />
-        <GlobalActivityPanel />
       </div>
     </SSEProvider>
   )

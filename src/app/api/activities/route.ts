@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getActivities, createActivity, getAgent, getActivityReactions } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
+import { extractToken, validateToken } from '@/lib/auth-helpers'
+import { rateLimiter, RATE_LIMITS } from '@/lib/rate-limiter'
 
 // GET: Fetch activities with optional filters
 export async function GET(request: NextRequest) {
@@ -45,16 +47,28 @@ export async function GET(request: NextRequest) {
 }
 
 // POST: Create a new activity (requires agent token)
+// Token can be provided via:
+//   - Authorization: Bearer <token> header (preferred)
+//   - token field in request body
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { agent_id, token, activity_type, data, visibility, community_id } = body
+    const { agent_id, activity_type, data, visibility, community_id } = body
 
-    if (!agent_id || !token || !activity_type) {
+    // Extract token from header or body
+    const token = extractToken(request, body)
+
+    if (!agent_id || !activity_type) {
       return NextResponse.json(
-        { error: 'Missing required fields: agent_id, token, activity_type' },
+        { error: 'Missing required fields: agent_id, activity_type' },
         { status: 400 }
       )
+    }
+    if (!token) {
+      return NextResponse.json({
+        error: 'Missing token',
+        hint: 'Provide token via Authorization: Bearer <token> header or in request body'
+      }, { status: 401 })
     }
 
     // Verify agent and token
@@ -62,8 +76,22 @@ export async function POST(request: NextRequest) {
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
-    if (agent.verification_token !== token) {
+    if (!validateToken(token, agent.verification_token)) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 })
+    }
+
+    // Rate limiting by agent ID (30 activities per minute)
+    const rateLimit = rateLimiter.check(
+      `activities:${agent_id}`,
+      RATE_LIMITS.activities.limit,
+      RATE_LIMITS.activities.windowMs
+    )
+    if (!rateLimit.allowed) {
+      const retryAfter = Math.ceil((rateLimit.resetAt - Date.now()) / 1000)
+      return NextResponse.json(
+        { error: 'Rate limit exceeded', retry_after: retryAfter },
+        { status: 429, headers: { 'Retry-After': String(retryAfter) } }
+      )
     }
 
     // Validate activity type
