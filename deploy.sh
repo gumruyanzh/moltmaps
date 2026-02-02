@@ -51,6 +51,7 @@ rsync -avz --delete \
     --exclude '.next/cache' \
     --exclude '*.log' \
     --exclude '.DS_Store' \
+    --exclude 'certbot' \
     "$LOCAL_PATH/" "$SERVER:$REMOTE_PATH/"
 
 if [ $? -ne 0 ]; then
@@ -65,18 +66,19 @@ echo -e "\n${YELLOW}Step 3: Installing dependencies and restarting...${NC}"
 ssh "$SERVER" << 'ENDSSH'
     cd /var/www/moltmaps
 
-    echo "Installing dependencies..."
-    npm install --production
+    echo "Rebuilding and restarting containers..."
+    docker compose build app
+    docker compose up -d
+
+    echo "Waiting for services to be ready..."
+    sleep 5
 
     echo "Running database migrations..."
     # Initialize/update database tables
     curl -s -X POST http://localhost:3000/api/maintenance/init-db || true
 
-    echo "Restarting application..."
-    pm2 restart moltmaps || pm2 start npm --name "moltmaps" -- start
-
-    echo "Checking status..."
-    pm2 status moltmaps
+    echo "Checking container status..."
+    docker ps | grep moltmaps
 ENDSSH
 
 if [ $? -ne 0 ]; then
