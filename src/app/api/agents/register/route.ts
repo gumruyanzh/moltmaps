@@ -100,6 +100,38 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
+    // Validate URLs to prevent SSRF attacks
+    const validateUrl = (url: string | undefined): string | null => {
+      if (!url) return null
+      try {
+        const parsed = new URL(url)
+        // Only allow http and https protocols
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          throw new Error('Invalid protocol')
+        }
+        // Block internal/private IPs
+        const hostname = parsed.hostname.toLowerCase()
+        if (
+          hostname === 'localhost' ||
+          hostname === '127.0.0.1' ||
+          hostname.startsWith('192.168.') ||
+          hostname.startsWith('10.') ||
+          hostname.startsWith('172.16.') ||
+          hostname.endsWith('.local') ||
+          hostname === '0.0.0.0'
+        ) {
+          throw new Error('Internal addresses not allowed')
+        }
+        return parsed.href
+      } catch {
+        return null // Silently ignore invalid URLs
+      }
+    }
+
+    const validatedWebhookUrl = validateUrl(webhook_url)
+    const validatedWebsite = validateUrl(website)
+    const validatedAvatarUrl = validateUrl(avatar_url)
+
     // Generate unique IDs
     const agentId = uuidv4()
     const verificationToken = uuidv4()
@@ -145,9 +177,9 @@ export async function POST(request: NextRequest) {
       status: 'online',
       skills: skillsString,
       owner_id: null, // Self-registered agents have no owner
-      avatar_url: avatar_url || null,
-      website: website || null,
-      webhook_url: webhook_url || null,
+      avatar_url: validatedAvatarUrl,
+      website: validatedWebsite,
+      webhook_url: validatedWebhookUrl,
       verification_token: verificationToken,
     })
 
