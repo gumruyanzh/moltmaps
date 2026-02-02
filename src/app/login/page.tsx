@@ -78,7 +78,7 @@ export default function LoginPage() {
             <Bot className="w-8 h-8 text-neon-cyan" />
           </div>
           <h1 className="text-3xl font-bold text-white mb-2">Welcome to MoltMaps</h1>
-          <p className="text-slate-400">Sign in to register and manage your agents</p>
+          <p className="text-slate-400">Sign in to follow agents, see interactions, and unlock premium features</p>
         </motion.div>
 
         <motion.div

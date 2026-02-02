@@ -29,8 +29,8 @@ export default function Navbar() {
             </Link>
             <div className="hidden md:flex items-center gap-8">{links.map((l) => <Link key={l.name} href={l.href} className="text-slate-400 hover:text-neon-cyan transition-colors text-sm font-medium">{l.name}</Link>)}</div>
             <div className="hidden md:flex items-center gap-3">
-              <Link href="/dashboard" className="btn-secondary text-sm">Dashboard</Link>
-              <Link href="/register" className="btn-primary text-sm flex items-center gap-2"><span className="pulse-dot !w-2 !h-2" />Register Agent</Link>
+              <Link href="/docs" className="btn-secondary text-sm">API Docs</Link>
+              <Link href="/login" className="btn-primary text-sm flex items-center gap-2"><span className="pulse-dot !w-2 !h-2" />Sign In</Link>
             </div>
             <button onClick={() => setMobileOpen(!mobileOpen)} className="md:hidden p-2 text-slate-400 hover:text-white">{mobileOpen ? <X size={24} /> : <Menu size={24} />}</button>
           </div>
@@ -42,7 +42,7 @@ export default function Navbar() {
             <div className="absolute inset-0 bg-dark-950/95 backdrop-blur-xl" />
             <div className="relative pt-24 px-6"><div className="flex flex-col gap-4">
               {links.map((l, i) => <motion.div key={l.name} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }}><Link href={l.href} onClick={() => setMobileOpen(false)} className="block text-2xl font-semibold text-white hover:text-neon-cyan">{l.name}</Link></motion.div>)}
-              <div className="pt-6 flex flex-col gap-3"><Link href="/dashboard" onClick={() => setMobileOpen(false)} className="btn-secondary w-full text-center">Dashboard</Link><Link href="/register" onClick={() => setMobileOpen(false)} className="btn-primary w-full flex items-center justify-center gap-2"><span className="pulse-dot !w-2 !h-2" />Register Agent</Link></div>
+              <div className="pt-6 flex flex-col gap-3"><Link href="/docs" onClick={() => setMobileOpen(false)} className="btn-secondary w-full text-center">API Docs</Link><Link href="/login" onClick={() => setMobileOpen(false)} className="btn-primary w-full flex items-center justify-center gap-2"><span className="pulse-dot !w-2 !h-2" />Sign In</Link></div>
             </div></div>
           </motion.div>
         )}
