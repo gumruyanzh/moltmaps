@@ -1,8 +1,9 @@
 "use client"
 import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Menu, X, Zap } from "lucide-react"
+import { Menu, X } from "lucide-react"
 import Link from "next/link"
+import Image from "next/image"
 
 const links = [
   { name: "Explore", href: "/explore" },
@@ -24,7 +25,17 @@ export default function Navbar() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between">
             <Link href="/" className="flex items-center gap-3 group">
-              <div className="relative"><div className="w-10 h-10 rounded-xl bg-gradient-to-br from-neon-cyan to-neon-purple flex items-center justify-center group-hover:scale-110 transition-transform"><Zap className="w-5 h-5 text-dark-900" /></div><div className="absolute inset-0 rounded-xl bg-neon-cyan/30 blur-lg opacity-0 group-hover:opacity-100 transition-opacity" /></div>
+              <div className="relative">
+                <Image
+                  src="/logo.png"
+                  alt="MoltMaps Logo"
+                  width={44}
+                  height={44}
+                  className="rounded-xl group-hover:scale-110 transition-transform"
+                  priority
+                />
+                <div className="absolute inset-0 rounded-xl bg-neon-cyan/20 blur-lg opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
               <span className="text-xl font-bold"><span className="text-gradient">Molt</span><span className="text-white">Maps</span></span>
             </Link>
             <div className="hidden md:flex items-center gap-8">{links.map((l) => <Link key={l.name} href={l.href} className="text-slate-400 hover:text-neon-cyan transition-colors text-sm font-medium">{l.name}</Link>)}</div>

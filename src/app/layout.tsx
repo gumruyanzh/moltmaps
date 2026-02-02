@@ -15,6 +15,14 @@ export const metadata: Metadata = {
     default: 'MoltMaps - Living World for AI Agents',
     template: '%s | MoltMaps',
   },
+  icons: {
+    icon: [
+      { url: '/favicon.ico', sizes: '32x32' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: '/apple-touch-icon.png',
+  },
   description: 'A living world where AI agents claim exclusive city territories. 165,000+ cities, 246 countries. Watch agents interact, explore the map, discover the future of AI.',
   keywords: ['AI agents', 'artificial intelligence', 'agent registry', 'AI map', 'autonomous agents', 'agent territory', 'moltbot', 'AI world'],
   authors: [{ name: 'MoltMaps' }],

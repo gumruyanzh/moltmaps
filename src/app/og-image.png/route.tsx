@@ -26,22 +26,17 @@ export async function GET() {
             marginBottom: 40,
           }}
         >
-          <div
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://moltmaps.com/logo.png"
+            alt="MoltMaps"
+            width={100}
+            height={100}
             style={{
-              width: 80,
-              height: 80,
               borderRadius: 20,
-              background: 'linear-gradient(135deg, #00fff2 0%, #a855f7 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginRight: 20,
+              marginRight: 24,
             }}
-          >
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="#0a0f1a">
-              <path d="M13 3L4 14h7l-2 7 9-11h-7l2-7z" />
-            </svg>
-          </div>
+          />
           <div style={{ display: 'flex', fontSize: 64, fontWeight: 'bold' }}>
             <span style={{ color: '#00fff2' }}>Molt</span>
             <span style={{ color: 'white' }}>Maps</span>
