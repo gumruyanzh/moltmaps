@@ -1,8 +1,7 @@
 import { NextAuthOptions, getServerSession } from 'next-auth'
-import GithubProvider from 'next-auth/providers/github'
 import CredentialsProvider from 'next-auth/providers/credentials'
-import { getUserByEmail, createUser, updateUserRole } from './db'
-import { v4 as uuidv4 } from 'uuid'
+import { getUserByEmail, updateUserRole } from './db'
+import bcrypt from 'bcryptjs'
 
 interface SessionUser {
   id: string
@@ -14,65 +13,50 @@ interface SessionUser {
 
 export const authOptions: NextAuthOptions = {
   providers: [
-    GithubProvider({
-      clientId: process.env.GITHUB_ID || '',
-      clientSecret: process.env.GITHUB_SECRET || '',
-    }),
-    // Development/Demo provider for easy testing
     CredentialsProvider({
-      name: 'Demo',
+      name: 'Email',
       credentials: {
-        email: { label: 'Email', type: 'email', placeholder: 'demo@moltmaps.com' },
-        name: { label: 'Name', type: 'text', placeholder: 'Demo User' },
+        email: { label: 'Email', type: 'email', placeholder: 'you@example.com' },
+        password: { label: 'Password', type: 'password' },
       },
       async authorize(credentials) {
-        if (!credentials?.email) return null
+        if (!credentials?.email || !credentials?.password) {
+          throw new Error('Email and password are required')
+        }
 
-        // Check if user exists
-        let dbUser = await getUserByEmail(credentials.email)
-        if (!dbUser) {
-          // Create new user for demo
-          dbUser = await createUser({
-            id: uuidv4(),
-            email: credentials.email,
-            name: credentials.name || 'Demo User',
-            image: null,
-          })
+        // Find user by email
+        const user = await getUserByEmail(credentials.email.toLowerCase().trim())
+        if (!user) {
+          throw new Error('Invalid email or password')
+        }
+
+        // Check if user has a password set
+        if (!user.password_hash) {
+          throw new Error('Please sign up first or reset your password')
+        }
+
+        // Verify password
+        const isValidPassword = await bcrypt.compare(credentials.password, user.password_hash)
+        if (!isValidPassword) {
+          throw new Error('Invalid email or password')
+        }
+
+        // Auto-promote superadmins based on environment variable
+        const superadminEmails = process.env.SUPERADMIN_EMAILS?.split(',').map(e => e.trim().toLowerCase()) || []
+        if (superadminEmails.includes(user.email.toLowerCase()) && user.role !== 'superadmin') {
+          await updateUserRole(user.id, 'superadmin')
         }
 
         return {
-          id: dbUser.id,
-          email: dbUser.email,
-          name: dbUser.name,
-          image: dbUser.image,
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
         }
       },
     }),
   ],
   callbacks: {
-    async signIn({ user, account }) {
-      if (!user.email) return false
-
-      // For OAuth providers, create/get user
-      if (account?.provider === 'github') {
-        let dbUser = await getUserByEmail(user.email)
-        if (!dbUser) {
-          dbUser = await createUser({
-            id: uuidv4(),
-            email: user.email,
-            name: user.name || null,
-            image: user.image || null,
-          })
-        }
-
-        // Auto-promote superadmins based on environment variable
-        const superadminEmails = process.env.SUPERADMIN_EMAILS?.split(',').map(e => e.trim()) || []
-        if (superadminEmails.includes(user.email) && dbUser.role !== 'superadmin') {
-          await updateUserRole(dbUser.id, 'superadmin')
-        }
-      }
-      return true
-    },
     async session({ session }) {
       if (session.user?.email) {
         const dbUser = await getUserByEmail(session.user.email)

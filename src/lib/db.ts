@@ -21,6 +21,7 @@ export interface User {
   name: string | null
   image: string | null
   role: 'user' | 'superadmin'
+  password_hash: string | null
   created_at: string
 }
 
@@ -147,6 +148,15 @@ export interface LoginToken {
   created_at: string
 }
 
+export interface PasswordResetToken {
+  id: string
+  user_id: string
+  token: string
+  expires_at: string
+  used_at: string | null
+  created_at: string
+}
+
 export interface City {
   id: string
   name: string
@@ -183,6 +193,7 @@ export async function initDatabase() {
         name TEXT,
         image TEXT,
         role TEXT DEFAULT 'user',
+        password_hash TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -191,6 +202,9 @@ export async function initDatabase() {
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='role') THEN
           ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password_hash') THEN
+          ALTER TABLE users ADD COLUMN password_hash TEXT;
         END IF;
       END $$;
 
@@ -413,6 +427,19 @@ export async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_login_tokens_agent ON login_tokens(agent_id);
       CREATE INDEX IF NOT EXISTS idx_login_tokens_token ON login_tokens(token);
       CREATE INDEX IF NOT EXISTS idx_login_tokens_expires ON login_tokens(expires_at);
+
+      -- Password reset tokens
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        expires_at TIMESTAMP NOT NULL,
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
+      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token ON password_reset_tokens(token);
+      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at);
     `)
   } finally {
     client.release()
@@ -429,10 +456,10 @@ export async function getUserByEmail(email: string): Promise<User | null> {
   return result.rows[0] || null
 }
 
-export async function createUser(user: Omit<User, 'created_at' | 'role'> & { role?: 'user' | 'superadmin' }): Promise<User> {
+export async function createUser(user: Omit<User, 'created_at' | 'role' | 'password_hash'> & { role?: 'user' | 'superadmin', password_hash?: string | null }): Promise<User> {
   const result = await pool.query(
-    'INSERT INTO users (id, email, name, image, role) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [user.id, user.email, user.name, user.image, user.role || 'user']
+    'INSERT INTO users (id, email, name, image, role, password_hash) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+    [user.id, user.email, user.name, user.image, user.role || 'user', user.password_hash || null]
   )
   return result.rows[0]
 }
@@ -1724,6 +1751,105 @@ export async function isSuperadmin(userId: string): Promise<boolean> {
     [userId]
   )
   return result.rows[0]?.role === 'superadmin'
+}
+
+// ============= Password Reset Functions =============
+
+/**
+ * Create a password reset token for a user
+ * Token expires after 1 hour
+ */
+export async function createPasswordResetToken(userId: string): Promise<PasswordResetToken> {
+  const crypto = await import('crypto')
+
+  const id = `prt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  const token = crypto.randomBytes(32).toString('hex')
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000) // 1 hour
+
+  // Invalidate any existing tokens for this user
+  await pool.query(
+    'DELETE FROM password_reset_tokens WHERE user_id = $1 AND used_at IS NULL',
+    [userId]
+  )
+
+  const result = await pool.query(
+    `INSERT INTO password_reset_tokens (id, user_id, token, expires_at)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [id, userId, token, expiresAt.toISOString()]
+  )
+  return result.rows[0]
+}
+
+/**
+ * Validate and consume a password reset token
+ * Returns the user_id if valid, null otherwise
+ */
+export async function validatePasswordResetToken(token: string): Promise<{
+  valid: boolean
+  user_id?: string
+  error?: string
+}> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const result = await client.query(
+      'SELECT * FROM password_reset_tokens WHERE token = $1',
+      [token]
+    )
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return { valid: false, error: 'Invalid or expired reset link' }
+    }
+
+    const resetToken: PasswordResetToken = result.rows[0]
+
+    if (resetToken.used_at) {
+      await client.query('ROLLBACK')
+      return { valid: false, error: 'This reset link has already been used' }
+    }
+
+    if (new Date(resetToken.expires_at) < new Date()) {
+      await client.query('ROLLBACK')
+      return { valid: false, error: 'This reset link has expired' }
+    }
+
+    // Mark as used
+    await client.query(
+      'UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [resetToken.id]
+    )
+
+    await client.query('COMMIT')
+    return { valid: true, user_id: resetToken.user_id }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Update a user's password
+ */
+export async function updateUserPassword(userId: string, passwordHash: string): Promise<boolean> {
+  const result = await pool.query(
+    'UPDATE users SET password_hash = $1 WHERE id = $2',
+    [passwordHash, userId]
+  )
+  return (result.rowCount ?? 0) > 0
+}
+
+/**
+ * Clean up expired password reset tokens
+ */
+export async function cleanupExpiredPasswordResetTokens(): Promise<number> {
+  const result = await pool.query(
+    'DELETE FROM password_reset_tokens WHERE expires_at < CURRENT_TIMESTAMP'
+  )
+  return result.rowCount ?? 0
 }
 
 export default pool
