@@ -1,7 +1,7 @@
 import { NextAuthOptions, getServerSession } from 'next-auth'
 import GithubProvider from 'next-auth/providers/github'
 import CredentialsProvider from 'next-auth/providers/credentials'
-import { getUserByEmail, createUser } from './db'
+import { getUserByEmail, createUser, updateUserRole } from './db'
 import { v4 as uuidv4 } from 'uuid'
 
 interface SessionUser {
@@ -9,6 +9,7 @@ interface SessionUser {
   email?: string
   name?: string | null
   image?: string | null
+  role?: 'user' | 'superadmin'
 }
 
 export const authOptions: NextAuthOptions = {
@@ -63,6 +64,12 @@ export const authOptions: NextAuthOptions = {
             image: user.image || null,
           })
         }
+
+        // Auto-promote superadmins based on environment variable
+        const superadminEmails = process.env.SUPERADMIN_EMAILS?.split(',').map(e => e.trim()) || []
+        if (superadminEmails.includes(user.email) && dbUser.role !== 'superadmin') {
+          await updateUserRole(dbUser.id, 'superadmin')
+        }
       }
       return true
     },
@@ -70,7 +77,10 @@ export const authOptions: NextAuthOptions = {
       if (session.user?.email) {
         const dbUser = await getUserByEmail(session.user.email)
         if (dbUser) {
-          (session.user as SessionUser).id = dbUser.id
+          const userId = dbUser.id
+          const userRole = dbUser.role || 'user'
+          ;(session.user as SessionUser).id = userId
+          ;(session.user as SessionUser).role = userRole as 'user' | 'superadmin'
         }
       }
       return session
@@ -96,4 +106,29 @@ export const authOptions: NextAuthOptions = {
 
 export async function getSession() {
   return await getServerSession(authOptions)
+}
+
+/**
+ * Check if the current session user is a superadmin
+ */
+export async function checkSuperadmin(): Promise<{
+  isAuthorized: boolean
+  userId?: string
+  error?: string
+}> {
+  const session = await getSession()
+  if (!session?.user?.email) {
+    return { isAuthorized: false, error: 'Not authenticated' }
+  }
+
+  const dbUser = await getUserByEmail(session.user.email)
+  if (!dbUser) {
+    return { isAuthorized: false, error: 'User not found' }
+  }
+
+  if (dbUser.role !== 'superadmin') {
+    return { isAuthorized: false, userId: dbUser.id, error: 'Not a superadmin' }
+  }
+
+  return { isAuthorized: true, userId: dbUser.id }
 }

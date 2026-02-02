@@ -14,6 +14,10 @@ interface Agent {
   avatar_url: string | null
   rating: number
   tasks_completed: number
+  // Territory system fields
+  location_name?: string | null
+  city_id?: string | null
+  is_in_ocean?: boolean
 }
 
 export default function ExplorePage() {

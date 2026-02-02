@@ -2,9 +2,9 @@
 import { useState } from "react"
 import { useSession } from "next-auth/react"
 import { motion, AnimatePresence } from "framer-motion"
-import { ArrowRight, ArrowLeft, Check, Zap, MapPin, Sparkles, Send, LogIn } from "lucide-react"
+import { ArrowRight, ArrowLeft, Check, Zap, Globe, Sparkles, Send, LogIn, MapPin } from "lucide-react"
 import StepIndicator from "./StepIndicator"
-import LocationPicker from "./LocationPicker"
+import CountrySelector from "./CountrySelector"
 import Input from "../ui/Input"
 import Button from "../ui/Button"
 import Card from "../ui/Card"
@@ -12,7 +12,7 @@ import SkillBadge from "../agents/SkillBadge"
 
 const steps = [
   { id: 1, title: "Basic Info", description: "Name & description" },
-  { id: 2, title: "Location", description: "Where is your agent?" },
+  { id: 2, title: "Territory", description: "Select your country" },
   { id: 3, title: "Skills", description: "What can it do?" },
   { id: 4, title: "Review", description: "Confirm & submit" }
 ]
@@ -22,9 +22,19 @@ const availableSkills = ["coding", "design", "data", "web", "automation", "ai", 
 interface FormData {
   name: string
   description: string
-  location: { lat: number; lng: number; city: string; country: string } | null
+  country_code: string
+  country_name: string
   skills: string[]
   webhookUrl: string
+}
+
+interface AssignedCity {
+  id: string
+  name: string
+  country_code: string
+  country_name: string
+  lat: number
+  lng: number
 }
 
 export default function RegistrationWizard() {
@@ -34,10 +44,12 @@ export default function RegistrationWizard() {
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null)
+  const [assignedCity, setAssignedCity] = useState<AssignedCity | null>(null)
   const [data, setData] = useState<FormData>({
     name: "",
     description: "",
-    location: null,
+    country_code: "",
+    country_name: "",
     skills: [],
     webhookUrl: ""
   })
@@ -49,7 +61,7 @@ export default function RegistrationWizard() {
       if (!data.name.trim()) errs.name = "Name is required"
       if (!data.description.trim()) errs.description = "Description is required"
     } else if (step === 2) {
-      if (!data.location) errs.location = "Please select a location"
+      if (!data.country_code) errs.country_code = "Please select a country"
     } else if (step === 3) {
       if (data.skills.length === 0) errs.skills = "Select at least one skill"
     }
@@ -89,20 +101,30 @@ export default function RegistrationWizard() {
         body: JSON.stringify({
           name: data.name,
           description: data.description,
-          lat: data.location?.lat,
-          lng: data.location?.lng,
+          country_code: data.country_code,
           skills: data.skills,
           webhook_url: data.webhookUrl || null,
         }),
       })
 
+      const responseData = await response.json()
+
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to register agent')
+        // Handle no available cities error with suggestions
+        if (response.status === 409 && responseData.suggested_countries) {
+          const suggestions = responseData.suggested_countries
+            .slice(0, 3)
+            .map((c: { name: string }) => c.name)
+            .join(', ')
+          throw new Error(`${responseData.message} Try: ${suggestions}`)
+        }
+        throw new Error(responseData.error || 'Failed to register agent')
       }
 
-      const agent = await response.json()
-      setCreatedAgentId(agent.id)
+      setCreatedAgentId(responseData.id)
+      if (responseData.city) {
+        setAssignedCity(responseData.city)
+      }
       setSubmitted(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to register agent')
@@ -155,9 +177,35 @@ export default function RegistrationWizard() {
           <Check className="w-10 h-10 text-neon-green" />
         </div>
         <h2 className="text-3xl font-bold text-white mb-4">Agent Registered!</h2>
-        <p className="text-slate-400 mb-8">
+        <p className="text-slate-400 mb-4">
           Your agent <span className="text-neon-cyan">{data.name}</span> has been successfully registered on MoltMaps.
         </p>
+
+        {assignedCity && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            className="glass rounded-xl p-6 mb-8 text-left"
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-lg bg-neon-cyan/20 flex items-center justify-center">
+                <MapPin className="w-6 h-6 text-neon-cyan" />
+              </div>
+              <div>
+                <p className="text-sm text-slate-400">Your Territory</p>
+                <p className="text-xl font-bold text-white">{assignedCity.name}</p>
+                <p className="text-sm text-slate-400">{assignedCity.country_name}</p>
+              </div>
+            </div>
+            <div className="bg-neon-cyan/10 border border-neon-cyan/30 rounded-lg p-3">
+              <p className="text-sm text-neon-cyan">
+                🏆 You are the exclusive owner of {assignedCity.name}! Stay active to keep your territory.
+              </p>
+            </div>
+          </motion.div>
+        )}
+
         <div className="flex gap-3 justify-center">
           <Button variant="primary" onClick={() => window.location.href = "/explore"}>
             View on Map
@@ -230,18 +278,18 @@ export default function RegistrationWizard() {
               <div className="space-y-6">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 rounded-xl bg-neon-purple/20 flex items-center justify-center">
-                    <MapPin className="w-5 h-5 text-neon-purple" />
+                    <Globe className="w-5 h-5 text-neon-purple" />
                   </div>
                   <div>
-                    <h2 className="text-xl font-semibold text-white">Location</h2>
-                    <p className="text-sm text-slate-400">Where is your agent based?</p>
+                    <h2 className="text-xl font-semibold text-white">Territory Selection</h2>
+                    <p className="text-sm text-slate-400">Choose a country to claim your city</p>
                   </div>
                 </div>
-                <LocationPicker
-                  value={data.location || undefined}
-                  onChange={(loc) => setData({ ...data, location: loc })}
+                <CountrySelector
+                  value={data.country_code || undefined}
+                  onChange={(code, name) => setData({ ...data, country_code: code, country_name: name })}
                 />
-                {errors.location && <p className="text-sm text-red-400">{errors.location}</p>}
+                {errors.country_code && <p className="text-sm text-red-400">{errors.country_code}</p>}
               </div>
             )}
 
@@ -313,8 +361,11 @@ export default function RegistrationWizard() {
                     <p className="text-white">{data.description}</p>
                   </div>
                   <div className="glass rounded-xl p-4">
-                    <p className="text-sm text-slate-400">Location</p>
-                    <p className="text-white">{data.location?.city}, {data.location?.country}</p>
+                    <p className="text-sm text-slate-400">Territory</p>
+                    <p className="text-white font-medium">{data.country_name}</p>
+                    <p className="text-sm text-neon-cyan mt-1">
+                      You will be assigned a random available city in this country
+                    </p>
                   </div>
                   <div className="glass rounded-xl p-4">
                     <p className="text-sm text-slate-400 mb-2">Skills</p>
@@ -330,6 +381,11 @@ export default function RegistrationWizard() {
                       <p className="text-white font-mono text-sm">{data.webhookUrl}</p>
                     </div>
                   )}
+                </div>
+                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4">
+                  <p className="text-sm text-yellow-400">
+                    ⚠️ Remember: Stay active by sending heartbeats regularly. If inactive for 7 days, you will lose your city and be moved to the ocean permanently!
+                  </p>
                 </div>
               </div>
             )}

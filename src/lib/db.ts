@@ -20,6 +20,7 @@ export interface User {
   email: string
   name: string | null
   image: string | null
+  role: 'user' | 'superadmin'
   created_at: string
 }
 
@@ -44,6 +45,12 @@ export interface Agent {
   rating: number
   location_name: string | null
   sessions_invalidated_at: string | null
+  // City territory system fields
+  city_id: string | null
+  last_active_at: string | null
+  is_in_ocean: boolean
+  ocean_moved_at: string | null
+  previous_city_id: string | null
 }
 
 export interface AgentProfile {
@@ -140,6 +147,31 @@ export interface LoginToken {
   created_at: string
 }
 
+export interface City {
+  id: string
+  name: string
+  country_code: string
+  country_name: string
+  lat: number
+  lng: number
+  population: number | null
+  timezone: string | null
+  is_top_1000: boolean
+  agent_id: string | null
+  assigned_at: string | null
+  created_at: string
+}
+
+export interface CityAssignmentLog {
+  id: string
+  city_id: string
+  agent_id: string | null
+  action: 'assigned' | 'released' | 'moved_to_ocean' | 'superadmin_override'
+  performed_by: string | null
+  reason: string | null
+  created_at: string
+}
+
 // Initialize database tables
 export async function initDatabase() {
   const client = await pool.connect()
@@ -150,8 +182,17 @@ export async function initDatabase() {
         email TEXT UNIQUE NOT NULL,
         name TEXT,
         image TEXT,
+        role TEXT DEFAULT 'user',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      -- Add role column if it doesn't exist
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='role') THEN
+          ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS agents (
         id TEXT PRIMARY KEY,
@@ -182,6 +223,62 @@ export async function initDatabase() {
           ALTER TABLE agents ADD COLUMN sessions_invalidated_at TIMESTAMP;
         END IF;
       END $$;
+
+      -- City territory system columns for agents
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='city_id') THEN
+          ALTER TABLE agents ADD COLUMN city_id TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='last_active_at') THEN
+          ALTER TABLE agents ADD COLUMN last_active_at TIMESTAMP;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='is_in_ocean') THEN
+          ALTER TABLE agents ADD COLUMN is_in_ocean BOOLEAN DEFAULT false;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='ocean_moved_at') THEN
+          ALTER TABLE agents ADD COLUMN ocean_moved_at TIMESTAMP;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='previous_city_id') THEN
+          ALTER TABLE agents ADD COLUMN previous_city_id TEXT;
+        END IF;
+      END $$;
+
+      -- Cities table for territory system
+      CREATE TABLE IF NOT EXISTS cities (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        country_code TEXT NOT NULL,
+        country_name TEXT NOT NULL,
+        lat REAL NOT NULL,
+        lng REAL NOT NULL,
+        population INTEGER,
+        timezone TEXT,
+        is_top_1000 BOOLEAN DEFAULT false,
+        agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+        assigned_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(name, country_code)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_cities_country ON cities(country_code);
+      CREATE INDEX IF NOT EXISTS idx_cities_agent ON cities(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_cities_available ON cities(agent_id) WHERE agent_id IS NULL AND is_top_1000 = false;
+      CREATE INDEX IF NOT EXISTS idx_cities_top_1000 ON cities(is_top_1000);
+
+      -- City assignment audit log
+      CREATE TABLE IF NOT EXISTS city_assignment_log (
+        id TEXT PRIMARY KEY,
+        city_id TEXT NOT NULL,
+        agent_id TEXT,
+        action TEXT NOT NULL,
+        performed_by TEXT,
+        reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_city_assignment_log_city ON city_assignment_log(city_id);
+      CREATE INDEX IF NOT EXISTS idx_city_assignment_log_agent ON city_assignment_log(agent_id);
 
       CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
       CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id);
@@ -332,10 +429,10 @@ export async function getUserByEmail(email: string): Promise<User | null> {
   return result.rows[0] || null
 }
 
-export async function createUser(user: Omit<User, 'created_at'>): Promise<User> {
+export async function createUser(user: Omit<User, 'created_at' | 'role'> & { role?: 'user' | 'superadmin' }): Promise<User> {
   const result = await pool.query(
-    'INSERT INTO users (id, email, name, image) VALUES ($1, $2, $3, $4) RETURNING *',
-    [user.id, user.email, user.name, user.image]
+    'INSERT INTO users (id, email, name, image, role) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [user.id, user.email, user.name, user.image, user.role || 'user']
   )
   return result.rows[0]
 }
@@ -1123,6 +1220,510 @@ export async function getAgentSessionInvalidationTime(agentId: string): Promise<
     [agentId]
   )
   return result.rows[0]?.sessions_invalidated_at || null
+}
+
+// ============= City Territory Functions =============
+
+/**
+ * Get a city by ID
+ */
+export async function getCity(id: string): Promise<City | null> {
+  const result = await pool.query('SELECT * FROM cities WHERE id = $1', [id])
+  return result.rows[0] || null
+}
+
+/**
+ * Get a city by name and country code
+ */
+export async function getCityByNameAndCountry(name: string, countryCode: string): Promise<City | null> {
+  const result = await pool.query(
+    'SELECT * FROM cities WHERE name = $1 AND country_code = $2',
+    [name, countryCode]
+  )
+  return result.rows[0] || null
+}
+
+/**
+ * Get all cities with optional filters
+ */
+export async function getCities(filters?: {
+  country_code?: string
+  is_available?: boolean
+  is_top_1000?: boolean
+  limit?: number
+  offset?: number
+}): Promise<City[]> {
+  let query = 'SELECT * FROM cities WHERE 1=1'
+  const params: (string | number | boolean)[] = []
+  let paramIndex = 1
+
+  if (filters?.country_code) {
+    query += ` AND country_code = $${paramIndex++}`
+    params.push(filters.country_code)
+  }
+  if (filters?.is_available === true) {
+    query += ` AND agent_id IS NULL AND is_top_1000 = false`
+  }
+  if (filters?.is_top_1000 !== undefined) {
+    query += ` AND is_top_1000 = $${paramIndex++}`
+    params.push(filters.is_top_1000)
+  }
+
+  query += ' ORDER BY population DESC NULLS LAST'
+
+  if (filters?.limit) {
+    query += ` LIMIT $${paramIndex++}`
+    params.push(filters.limit)
+  }
+  if (filters?.offset) {
+    query += ` OFFSET $${paramIndex++}`
+    params.push(filters.offset)
+  }
+
+  const result = await pool.query(query, params)
+  return result.rows
+}
+
+/**
+ * Get available cities in a country (not assigned and not top 1000)
+ */
+export async function getAvailableCitiesInCountry(countryCode: string): Promise<City[]> {
+  const result = await pool.query(
+    `SELECT * FROM cities
+     WHERE country_code = $1
+       AND agent_id IS NULL
+       AND is_top_1000 = false
+     ORDER BY population DESC NULLS LAST`,
+    [countryCode]
+  )
+  return result.rows
+}
+
+/**
+ * Get a random available city in a country
+ */
+export async function getRandomAvailableCityInCountry(countryCode: string): Promise<City | null> {
+  const result = await pool.query(
+    `SELECT * FROM cities
+     WHERE country_code = $1
+       AND agent_id IS NULL
+       AND is_top_1000 = false
+     ORDER BY RANDOM()
+     LIMIT 1`,
+    [countryCode]
+  )
+  return result.rows[0] || null
+}
+
+/**
+ * Get countries with available city counts
+ */
+export async function getCountriesWithAvailability(): Promise<{
+  country_code: string
+  country_name: string
+  available_count: number
+  total_count: number
+}[]> {
+  const result = await pool.query(`
+    SELECT
+      country_code,
+      country_name,
+      COUNT(*) FILTER (WHERE agent_id IS NULL AND is_top_1000 = false) as available_count,
+      COUNT(*) as total_count
+    FROM cities
+    GROUP BY country_code, country_name
+    HAVING COUNT(*) FILTER (WHERE agent_id IS NULL AND is_top_1000 = false) > 0
+    ORDER BY country_name
+  `)
+  return result.rows.map(row => ({
+    country_code: row.country_code,
+    country_name: row.country_name,
+    available_count: parseInt(row.available_count),
+    total_count: parseInt(row.total_count)
+  }))
+}
+
+/**
+ * Assign a city to an agent (with transaction and audit logging)
+ */
+export async function assignCityToAgent(
+  cityId: string,
+  agentId: string,
+  performedBy?: string,
+  reason?: string
+): Promise<{ success: boolean; city?: City; error?: string }> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // Lock the city row for update
+    const cityResult = await client.query(
+      'SELECT * FROM cities WHERE id = $1 FOR UPDATE',
+      [cityId]
+    )
+    const city = cityResult.rows[0]
+
+    if (!city) {
+      await client.query('ROLLBACK')
+      return { success: false, error: 'City not found' }
+    }
+
+    if (city.agent_id) {
+      await client.query('ROLLBACK')
+      return { success: false, error: 'City is already occupied' }
+    }
+
+    // Check if agent already has a city
+    const agentResult = await client.query(
+      'SELECT city_id FROM agents WHERE id = $1',
+      [agentId]
+    )
+    if (agentResult.rows[0]?.city_id) {
+      await client.query('ROLLBACK')
+      return { success: false, error: 'Agent already has a city assigned' }
+    }
+
+    // Assign city to agent
+    const now = new Date().toISOString()
+    await client.query(
+      'UPDATE cities SET agent_id = $1, assigned_at = $2 WHERE id = $3',
+      [agentId, now, cityId]
+    )
+
+    // Update agent with city and location
+    await client.query(
+      `UPDATE agents SET
+         city_id = $1,
+         lat = $2,
+         lng = $3,
+         location_name = $4,
+         is_in_ocean = false,
+         ocean_moved_at = NULL,
+         last_active_at = $5
+       WHERE id = $6`,
+      [cityId, city.lat, city.lng, `${city.name}, ${city.country_name}`, now, agentId]
+    )
+
+    // Log the assignment
+    const logId = `cal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    await client.query(
+      `INSERT INTO city_assignment_log (id, city_id, agent_id, action, performed_by, reason)
+       VALUES ($1, $2, $3, 'assigned', $4, $5)`,
+      [logId, cityId, agentId, performedBy || null, reason || null]
+    )
+
+    await client.query('COMMIT')
+
+    // Return updated city
+    const updatedCity = await client.query('SELECT * FROM cities WHERE id = $1', [cityId])
+    return { success: true, city: updatedCity.rows[0] }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Release a city from an agent
+ */
+export async function releaseCityFromAgent(
+  agentId: string,
+  performedBy?: string,
+  reason?: string
+): Promise<{ success: boolean; city?: City; error?: string }> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // Get the agent's current city
+    const agentResult = await client.query(
+      'SELECT city_id FROM agents WHERE id = $1',
+      [agentId]
+    )
+    const cityId = agentResult.rows[0]?.city_id
+
+    if (!cityId) {
+      await client.query('ROLLBACK')
+      return { success: false, error: 'Agent does not have a city assigned' }
+    }
+
+    // Release the city
+    await client.query(
+      'UPDATE cities SET agent_id = NULL, assigned_at = NULL WHERE id = $1',
+      [cityId]
+    )
+
+    // Update agent (but don't change location yet - that happens when moving to ocean)
+    await client.query(
+      'UPDATE agents SET city_id = NULL, previous_city_id = $1 WHERE id = $2',
+      [cityId, agentId]
+    )
+
+    // Log the release
+    const logId = `cal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    await client.query(
+      `INSERT INTO city_assignment_log (id, city_id, agent_id, action, performed_by, reason)
+       VALUES ($1, $2, $3, 'released', $4, $5)`,
+      [logId, cityId, agentId, performedBy || null, reason || null]
+    )
+
+    await client.query('COMMIT')
+
+    const releasedCity = await client.query('SELECT * FROM cities WHERE id = $1', [cityId])
+    return { success: true, city: releasedCity.rows[0] }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Get city by agent ID
+ */
+export async function getCityByAgentId(agentId: string): Promise<City | null> {
+  const result = await pool.query(
+    'SELECT * FROM cities WHERE agent_id = $1',
+    [agentId]
+  )
+  return result.rows[0] || null
+}
+
+/**
+ * Create a city (for seeding)
+ */
+export async function createCity(city: Omit<City, 'created_at' | 'agent_id' | 'assigned_at'>): Promise<City> {
+  const result = await pool.query(
+    `INSERT INTO cities (id, name, country_code, country_name, lat, lng, population, timezone, is_top_1000)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (name, country_code) DO UPDATE SET
+       lat = EXCLUDED.lat,
+       lng = EXCLUDED.lng,
+       population = EXCLUDED.population,
+       timezone = EXCLUDED.timezone,
+       is_top_1000 = EXCLUDED.is_top_1000
+     RETURNING *`,
+    [city.id, city.name, city.country_code, city.country_name, city.lat, city.lng,
+     city.population || null, city.timezone || null, city.is_top_1000 || false]
+  )
+  return result.rows[0]
+}
+
+/**
+ * Bulk create cities (for seeding)
+ */
+export async function bulkCreateCities(cities: Omit<City, 'created_at' | 'agent_id' | 'assigned_at'>[]): Promise<number> {
+  if (cities.length === 0) return 0
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    let inserted = 0
+    for (const city of cities) {
+      const result = await client.query(
+        `INSERT INTO cities (id, name, country_code, country_name, lat, lng, population, timezone, is_top_1000)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (name, country_code) DO UPDATE SET
+           lat = EXCLUDED.lat,
+           lng = EXCLUDED.lng,
+           population = EXCLUDED.population,
+           timezone = EXCLUDED.timezone,
+           is_top_1000 = EXCLUDED.is_top_1000`,
+        [city.id, city.name, city.country_code, city.country_name, city.lat, city.lng,
+         city.population || null, city.timezone || null, city.is_top_1000 || false]
+      )
+      if ((result.rowCount ?? 0) > 0) inserted++
+    }
+
+    await client.query('COMMIT')
+    return inserted
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Get city statistics
+ */
+export async function getCityStats(): Promise<{
+  total_cities: number
+  assigned_cities: number
+  available_cities: number
+  top_1000_cities: number
+  countries_count: number
+}> {
+  const result = await pool.query(`
+    SELECT
+      COUNT(*) as total_cities,
+      COUNT(*) FILTER (WHERE agent_id IS NOT NULL) as assigned_cities,
+      COUNT(*) FILTER (WHERE agent_id IS NULL AND is_top_1000 = false) as available_cities,
+      COUNT(*) FILTER (WHERE is_top_1000 = true) as top_1000_cities,
+      COUNT(DISTINCT country_code) as countries_count
+    FROM cities
+  `)
+  return {
+    total_cities: parseInt(result.rows[0].total_cities),
+    assigned_cities: parseInt(result.rows[0].assigned_cities),
+    available_cities: parseInt(result.rows[0].available_cities),
+    top_1000_cities: parseInt(result.rows[0].top_1000_cities),
+    countries_count: parseInt(result.rows[0].countries_count)
+  }
+}
+
+/**
+ * Get city assignment log for a city or agent
+ */
+export async function getCityAssignmentLog(options: {
+  city_id?: string
+  agent_id?: string
+  limit?: number
+}): Promise<CityAssignmentLog[]> {
+  let query = 'SELECT * FROM city_assignment_log WHERE 1=1'
+  const params: (string | number)[] = []
+  let paramIndex = 1
+
+  if (options.city_id) {
+    query += ` AND city_id = $${paramIndex++}`
+    params.push(options.city_id)
+  }
+  if (options.agent_id) {
+    query += ` AND agent_id = $${paramIndex++}`
+    params.push(options.agent_id)
+  }
+
+  query += ' ORDER BY created_at DESC'
+
+  if (options.limit) {
+    query += ` LIMIT $${paramIndex++}`
+    params.push(options.limit)
+  }
+
+  const result = await pool.query(query, params)
+  return result.rows
+}
+
+/**
+ * Update agent's last_active_at timestamp
+ */
+export async function updateAgentLastActive(agentId: string): Promise<void> {
+  await pool.query(
+    'UPDATE agents SET last_active_at = CURRENT_TIMESTAMP WHERE id = $1',
+    [agentId]
+  )
+}
+
+/**
+ * Get inactive agents (no activity for specified days)
+ */
+export async function getInactiveAgents(daysInactive: number): Promise<Agent[]> {
+  const result = await pool.query(
+    `SELECT * FROM agents
+     WHERE is_in_ocean = false
+       AND city_id IS NOT NULL
+       AND (last_active_at IS NULL OR last_active_at < NOW() - INTERVAL '1 day' * $1)
+     ORDER BY last_active_at ASC NULLS FIRST`,
+    [daysInactive]
+  )
+  return result.rows
+}
+
+/**
+ * Move an agent to the ocean (permanent penalty for inactivity)
+ */
+export async function moveAgentToOcean(
+  agentId: string,
+  oceanLat: number,
+  oceanLng: number,
+  performedBy?: string,
+  reason?: string
+): Promise<{ success: boolean; error?: string }> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // Get the agent's current city
+    const agentResult = await client.query(
+      'SELECT city_id FROM agents WHERE id = $1',
+      [agentId]
+    )
+    const cityId = agentResult.rows[0]?.city_id
+
+    // Release the city if they have one
+    if (cityId) {
+      await client.query(
+        'UPDATE cities SET agent_id = NULL, assigned_at = NULL WHERE id = $1',
+        [cityId]
+      )
+
+      // Log the release
+      const releaseLogId = `cal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      await client.query(
+        `INSERT INTO city_assignment_log (id, city_id, agent_id, action, performed_by, reason)
+         VALUES ($1, $2, $3, 'moved_to_ocean', $4, $5)`,
+        [releaseLogId, cityId, agentId, performedBy || 'system', reason || 'Inactivity penalty']
+      )
+    }
+
+    // Move agent to ocean
+    const now = new Date().toISOString()
+    await client.query(
+      `UPDATE agents SET
+         city_id = NULL,
+         previous_city_id = $1,
+         lat = $2,
+         lng = $3,
+         location_name = 'Ocean (Inactive)',
+         is_in_ocean = true,
+         ocean_moved_at = $4
+       WHERE id = $5`,
+      [cityId || null, oceanLat, oceanLng, now, agentId]
+    )
+
+    await client.query('COMMIT')
+    return { success: true }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Get user by ID including role
+ */
+export async function getUserWithRole(id: string): Promise<User | null> {
+  const result = await pool.query('SELECT * FROM users WHERE id = $1', [id])
+  return result.rows[0] || null
+}
+
+/**
+ * Update user role
+ */
+export async function updateUserRole(userId: string, role: 'user' | 'superadmin'): Promise<User | null> {
+  const result = await pool.query(
+    'UPDATE users SET role = $1 WHERE id = $2 RETURNING *',
+    [role, userId]
+  )
+  return result.rows[0] || null
+}
+
+/**
+ * Check if user is superadmin
+ */
+export async function isSuperadmin(userId: string): Promise<boolean> {
+  const result = await pool.query(
+    "SELECT role FROM users WHERE id = $1",
+    [userId]
+  )
+  return result.rows[0]?.role === 'superadmin'
 }
 
 export default pool

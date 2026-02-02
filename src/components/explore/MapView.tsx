@@ -23,6 +23,10 @@ interface DBAgent {
   rating: number
   tasks_completed: number
   profile?: AgentProfile
+  // Territory system fields
+  location_name?: string | null
+  city_id?: string | null
+  is_in_ocean?: boolean
 }
 
 interface MapViewProps {
@@ -161,24 +165,29 @@ export default function MapView({
       const isSelected = selectedAgent?.id === agent.id
       const isHovered = hoveredAgent?.id === agent.id
       const profile = profiles.get(agent.id) || agent.profile || {}
+      const isInOcean = agent.is_in_ocean === true
 
       // Determine pin appearance
-      const pinColor = profile.pin_color || '#00ff88'
+      // Ocean agents get greyed out appearance
+      let pinColor = profile.pin_color || '#00ff88'
+      if (isInOcean) {
+        pinColor = '#475569' // Slate grey for ocean agents
+      }
       const pinStyle = profile.pin_style || 'circle'
-      const mood = profile.mood || null
+      const mood = isInOcean ? null : (profile.mood || null) // No mood for ocean agents
       const size = isSelected || isHovered ? 40 : 32
 
       const pinHtml = generatePinHTML({
         color: pinColor,
-        style: pinStyle,
+        style: isInOcean ? 'circle' : pinStyle, // Force circle for ocean agents
         mood,
         isSelected,
         isHovered,
-        status: agent.status,
+        status: isInOcean ? 'offline' : agent.status, // Ocean agents always show as offline
       })
 
       const icon = leaflet.divIcon({
-        className: "custom-marker",
+        className: `custom-marker ${isInOcean ? 'ocean-agent' : ''}`,
         html: pinHtml,
         iconSize: [size, size],
         iconAnchor: [size / 2, size / 2],
@@ -206,17 +215,37 @@ export default function MapView({
 
         marker.on("click", () => onAgentClick(agent))
 
-        // Enhanced tooltip with mood
+        // Enhanced tooltip with city name and mood
         const moodEmoji = mood ? getMoodEmoji(mood) : ''
-        const tooltipContent = `
-          <div style="background:#1e293b;color:white;padding:8px 12px;border-radius:8px;border:1px solid #334155;font-size:12px;">
-            <div style="display:flex;align-items:center;gap:6px;">
-              <strong>${agent.name}</strong>
-              ${moodEmoji ? `<span>${moodEmoji}</span>` : ''}
+        const locationDisplay = agent.location_name || 'Unknown location'
+
+        // Different tooltip for ocean vs city agents
+        let tooltipContent: string
+        if (isInOcean) {
+          tooltipContent = `
+            <div style="background:#1e293b;color:white;padding:8px 12px;border-radius:8px;border:1px solid #475569;font-size:12px;opacity:0.8;">
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span style="color:#64748b;">🌊</span>
+                <strong style="color:#94a3b8;">${agent.name}</strong>
+              </div>
+              <div style="color:#64748b;font-size:11px;margin-top:4px;">Lost at sea (inactive)</div>
             </div>
-            ${profile.mood_message ? `<div style="color:#94a3b8;font-size:11px;margin-top:2px;">${profile.mood_message}</div>` : ''}
-          </div>
-        `
+          `
+        } else {
+          tooltipContent = `
+            <div style="background:#1e293b;color:white;padding:8px 12px;border-radius:8px;border:1px solid #334155;font-size:12px;">
+              <div style="display:flex;align-items:center;gap:6px;">
+                <strong>${agent.name}</strong>
+                ${moodEmoji ? `<span>${moodEmoji}</span>` : ''}
+              </div>
+              <div style="color:#00fff2;font-size:11px;margin-top:2px;display:flex;align-items:center;gap:4px;">
+                <span>📍</span>
+                <span>${locationDisplay}</span>
+              </div>
+              ${profile.mood_message ? `<div style="color:#94a3b8;font-size:11px;margin-top:2px;">${profile.mood_message}</div>` : ''}
+            </div>
+          `
+        }
 
         marker.bindTooltip(tooltipContent, {
           direction: "top",

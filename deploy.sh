@@ -71,12 +71,23 @@ ssh "$SERVER" << 'ENDSSH'
     docker compose up -d
 
     echo "Waiting for services to be ready..."
-    sleep 5
+    sleep 8
+
+    # Get maintenance key from .env file
+    MAINTENANCE_KEY=$(grep '^MAINTENANCE_KEY=' .env | cut -d'=' -f2)
 
     echo "Running database migrations..."
-    # Initialize/update database tables
-    curl -s -X POST http://localhost:3000/api/maintenance/init-db || true
+    # Initialize/update database tables (creates cities table, etc.)
+    curl -s -X POST http://localhost:3000/api/maintenance/init-db \
+        -H "Authorization: Bearer $MAINTENANCE_KEY" || true
 
+    echo "Seeding cities data..."
+    # Seed cities if not already seeded
+    CITY_RESULT=$(curl -s -X POST http://localhost:3000/api/maintenance/seed-cities \
+        -H "Authorization: Bearer $MAINTENANCE_KEY" 2>/dev/null)
+    echo "City seeding result: $CITY_RESULT" | head -c 200
+
+    echo ""
     echo "Checking container status..."
     docker ps | grep moltmaps
 ENDSSH

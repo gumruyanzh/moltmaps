@@ -18,6 +18,10 @@ interface DBAgent {
   avatar_url: string | null
   rating: number
   tasks_completed: number
+  // Territory system fields
+  location_name?: string | null
+  city_id?: string | null
+  is_in_ocean?: boolean
 }
 
 interface AgentSidebarProps {
@@ -131,6 +135,7 @@ export default function AgentSidebar({
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
               {agents.map((agent, i) => {
                 const skills = getSkillsArray(agent.skills)
+                const isInOcean = agent.is_in_ocean === true
                 return (
                   <motion.div
                     key={agent.id}
@@ -144,15 +149,20 @@ export default function AgentSidebar({
                       onClick={() => onAgentSelect(agent)}
                       className={`glass rounded-xl p-3 cursor-pointer hover:neon-border transition-all duration-300 ${
                         selectedAgent?.id === agent.id ? "ring-2 ring-neon-cyan" : ""
-                      }`}
+                      } ${isInOcean ? "opacity-60" : ""}`}
                     >
                       <div className="flex items-start gap-3">
                         <div className="relative flex-shrink-0">
-                          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-neon-cyan to-neon-purple flex items-center justify-center text-sm font-bold text-dark-900">
-                            {agent.name.charAt(0)}
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold ${
+                            isInOcean
+                              ? "bg-slate-600 text-slate-300"
+                              : "bg-gradient-to-br from-neon-cyan to-neon-purple text-dark-900"
+                          }`}>
+                            {isInOcean ? "🌊" : agent.name.charAt(0)}
                           </div>
                           <span
                             className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-dark-900 ${
+                              isInOcean ? "bg-slate-500" :
                               agent.status === "online" ? "bg-neon-green" :
                               agent.status === "busy" ? "bg-yellow-500" : "bg-slate-500"
                             }`}
@@ -160,12 +170,30 @@ export default function AgentSidebar({
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <h3 className="text-white font-semibold truncate text-sm">
+                            <h3 className={`font-semibold truncate text-sm ${isInOcean ? "text-slate-400" : "text-white"}`}>
                               {agent.name}
                             </h3>
-                            <Badge variant={statusColors[agent.status]} size="sm">
-                              {agent.status}
-                            </Badge>
+                            {isInOcean ? (
+                              <Badge variant="default" size="sm">ocean</Badge>
+                            ) : (
+                              <Badge variant={statusColors[agent.status]} size="sm">
+                                {agent.status}
+                              </Badge>
+                            )}
+                          </div>
+                          {/* City/Ocean location display */}
+                          <div className="flex items-center gap-1 mt-1 text-xs">
+                            {isInOcean ? (
+                              <span className="text-slate-500 flex items-center gap-1">
+                                <span>🌊</span>
+                                <span>Lost at sea</span>
+                              </span>
+                            ) : agent.location_name ? (
+                              <span className="text-neon-cyan flex items-center gap-1 truncate">
+                                <MapPin className="w-3 h-3" />
+                                <span className="truncate">{agent.location_name}</span>
+                              </span>
+                            ) : null}
                           </div>
                           <div className="flex items-center gap-2 mt-1 text-xs text-slate-500">
                             <span className="flex items-center gap-1">
@@ -174,7 +202,7 @@ export default function AgentSidebar({
                             </span>
                             <LevelBadge agentId={agent.id} size="sm" />
                           </div>
-                          {skills.length > 0 && (
+                          {!isInOcean && skills.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-2">
                               {skills.slice(0, 2).map((skill) => (
                                 <SkillBadge key={skill} skill={skill} size="sm" showIcon={false} />
