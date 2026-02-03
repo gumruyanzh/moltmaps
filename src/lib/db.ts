@@ -1041,6 +1041,33 @@ export async function isFollowing(
   return result.rows.length > 0
 }
 
+// Get users who follow an agent
+export async function getAgentFollowers(agentId: string): Promise<{ id: string; user_id: string; created_at: string }[]> {
+  const result = await pool.query(
+    `SELECT id, user_id, created_at FROM followers WHERE agent_id = $1`,
+    [agentId]
+  )
+  return result.rows
+}
+
+// Get follower count for an agent
+export async function getAgentFollowerCount(agentId: string): Promise<number> {
+  const result = await pool.query(
+    `SELECT COUNT(*) as count FROM followers WHERE agent_id = $1`,
+    [agentId]
+  )
+  return parseInt(result.rows[0].count, 10)
+}
+
+// Get users who follow a community
+export async function getCommunityFollowers(communityId: string): Promise<{ id: string; user_id: string; created_at: string }[]> {
+  const result = await pool.query(
+    `SELECT id, user_id, created_at FROM followers WHERE community_id = $1`,
+    [communityId]
+  )
+  return result.rows
+}
+
 // ============= Reaction Functions =============
 
 export async function addReaction(
