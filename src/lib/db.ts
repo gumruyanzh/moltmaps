@@ -52,6 +52,8 @@ export interface Agent {
   is_in_ocean: boolean
   ocean_moved_at: string | null
   previous_city_id: string | null
+  // Personality for messaging
+  personality: string | null
 }
 
 export interface AgentProfile {
@@ -77,6 +79,7 @@ export interface Activity {
 export interface Message {
   id: string
   sender_id: string
+  sender_type: 'agent' | 'user'
   recipient_id: string | null
   community_id: string | null
   content: string
@@ -256,6 +259,9 @@ export async function initDatabase() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='previous_city_id') THEN
           ALTER TABLE agents ADD COLUMN previous_city_id TEXT;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='personality') THEN
+          ALTER TABLE agents ADD COLUMN personality TEXT;
+        END IF;
       END $$;
 
       -- Cities table for territory system
@@ -323,11 +329,12 @@ export async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_activities_created ON activities(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_activities_community ON activities(community_id);
 
-      -- Messaging between agents
+      -- Messaging between agents and users
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
-        sender_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-        recipient_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+        sender_id TEXT NOT NULL,
+        sender_type TEXT DEFAULT 'agent',
+        recipient_id TEXT,
         community_id TEXT,
         content TEXT NOT NULL,
         message_type TEXT DEFAULT 'text',
@@ -337,6 +344,14 @@ export async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
       CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id);
       CREATE INDEX IF NOT EXISTS idx_messages_community ON messages(community_id);
+
+      -- Add sender_type column if it doesn't exist (migration)
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='sender_type') THEN
+          ALTER TABLE messages ADD COLUMN sender_type TEXT DEFAULT 'agent';
+        END IF;
+      END $$;
 
       -- Communities
       CREATE TABLE IF NOT EXISTS communities (
@@ -508,6 +523,18 @@ export async function getAgentsByOwner(ownerId: string): Promise<Agent[]> {
     [ownerId]
   )
   return result.rows
+}
+
+export async function getAgentsWithWebhooks(): Promise<{ id: string; webhook_url: string }[]> {
+  const result = await pool.query(
+    'SELECT id, webhook_url FROM agents WHERE webhook_url IS NOT NULL AND webhook_url != \'\''
+  )
+  return result.rows
+}
+
+export async function getAgentCount(): Promise<number> {
+  const result = await pool.query('SELECT COUNT(*) as count FROM agents')
+  return parseInt(result.rows[0].count, 10)
 }
 
 export async function createAgent(agent: {
@@ -769,17 +796,19 @@ export async function getActivities(options?: {
 export async function createMessage(message: {
   id: string
   sender_id: string
+  sender_type?: 'agent' | 'user'
   recipient_id?: string
   community_id?: string
   content: string
   message_type?: 'text' | 'emoji' | 'system'
 }): Promise<Message> {
   const result = await pool.query(
-    `INSERT INTO messages (id, sender_id, recipient_id, community_id, content, message_type)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    `INSERT INTO messages (id, sender_id, sender_type, recipient_id, community_id, content, message_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
     [
       message.id,
       message.sender_id,
+      message.sender_type || 'agent',
       message.recipient_id || null,
       message.community_id || null,
       message.content,
@@ -794,39 +823,70 @@ export async function getMessages(options: {
   recipient_id?: string
   community_id?: string
   conversation_pair?: [string, string] // For DMs between two agents
+  user_agent_conversation?: { user_id: string; agent_id: string } // For user-agent DMs
   limit?: number
   before?: string // Message ID for pagination
 }): Promise<Message[]> {
-  let query = `
-    SELECT m.*,
-           s.name as sender_name, s.avatar_url as sender_avatar,
-           r.name as recipient_name, r.avatar_url as recipient_avatar
-    FROM messages m
-    JOIN agents s ON m.sender_id = s.id
-    LEFT JOIN agents r ON m.recipient_id = r.id
-    WHERE 1=1
-  `
+  let query: string
   const params: (string | number)[] = []
   let paramIndex = 1
 
-  if (options.conversation_pair) {
-    const [a, b] = options.conversation_pair
-    query += ` AND ((m.sender_id = $${paramIndex} AND m.recipient_id = $${paramIndex + 1})
-              OR (m.sender_id = $${paramIndex + 1} AND m.recipient_id = $${paramIndex}))`
-    params.push(a, b)
-    paramIndex += 2
+  if (options.user_agent_conversation) {
+    // Special handling for user-agent conversations
+    // User sends: sender_id=user_id, sender_type=user, recipient_id=agent_id
+    // Agent responds: sender_id=agent_id, sender_type=agent, recipient_id=user_id
+    const { user_id, agent_id } = options.user_agent_conversation
+    query = `
+      SELECT m.*,
+             CASE
+               WHEN m.sender_type = 'agent' THEN a.name
+               ELSE u.name
+             END as sender_name,
+             CASE
+               WHEN m.sender_type = 'agent' THEN a.avatar_url
+               ELSE u.image
+             END as sender_avatar
+      FROM messages m
+      LEFT JOIN agents a ON m.sender_type = 'agent' AND m.sender_id = a.id
+      LEFT JOIN users u ON m.sender_type = 'user' AND m.sender_id = u.id
+      WHERE (
+        (m.sender_id = $1 AND m.sender_type = 'user' AND m.recipient_id = $2)
+        OR (m.sender_id = $2 AND m.sender_type = 'agent' AND m.recipient_id = $1)
+      )
+    `
+    params.push(user_id, agent_id)
+    paramIndex = 3
   } else {
-    if (options.sender_id) {
-      query += ` AND m.sender_id = $${paramIndex++}`
-      params.push(options.sender_id)
-    }
-    if (options.recipient_id) {
-      query += ` AND m.recipient_id = $${paramIndex++}`
-      params.push(options.recipient_id)
-    }
-    if (options.community_id) {
-      query += ` AND m.community_id = $${paramIndex++}`
-      params.push(options.community_id)
+    // Original agent-to-agent handling
+    query = `
+      SELECT m.*,
+             s.name as sender_name, s.avatar_url as sender_avatar,
+             r.name as recipient_name, r.avatar_url as recipient_avatar
+      FROM messages m
+      LEFT JOIN agents s ON m.sender_id = s.id AND m.sender_type = 'agent'
+      LEFT JOIN agents r ON m.recipient_id = r.id
+      WHERE 1=1
+    `
+
+    if (options.conversation_pair) {
+      const [a, b] = options.conversation_pair
+      query += ` AND ((m.sender_id = $${paramIndex} AND m.recipient_id = $${paramIndex + 1})
+                OR (m.sender_id = $${paramIndex + 1} AND m.recipient_id = $${paramIndex}))`
+      params.push(a, b)
+      paramIndex += 2
+    } else {
+      if (options.sender_id) {
+        query += ` AND m.sender_id = $${paramIndex++}`
+        params.push(options.sender_id)
+      }
+      if (options.recipient_id) {
+        query += ` AND m.recipient_id = $${paramIndex++}`
+        params.push(options.recipient_id)
+      }
+      if (options.community_id) {
+        query += ` AND m.community_id = $${paramIndex++}`
+        params.push(options.community_id)
+      }
     }
   }
 
@@ -843,6 +903,81 @@ export async function markMessagesAsRead(recipientId: string, senderId: string):
      WHERE recipient_id = $1 AND sender_id = $2 AND read_at IS NULL`,
     [recipientId, senderId]
   )
+}
+
+// Get list of agents a user has conversations with
+export async function getUserConversations(userId: string): Promise<{
+  agent_id: string
+  agent_name: string
+  agent_avatar: string | null
+  agent_status: 'online' | 'offline' | 'busy'
+  last_message: string
+  last_message_at: string
+  unread_count: number
+}[]> {
+  const result = await pool.query(`
+    WITH conversation_agents AS (
+      -- Find all agents the user has exchanged messages with
+      SELECT DISTINCT
+        CASE
+          WHEN m.sender_type = 'user' AND m.sender_id = $1 THEN m.recipient_id
+          WHEN m.sender_type = 'agent' AND m.recipient_id = $1 THEN m.sender_id
+        END as agent_id
+      FROM messages m
+      WHERE (m.sender_type = 'user' AND m.sender_id = $1)
+         OR (m.sender_type = 'agent' AND m.recipient_id = $1)
+    ),
+    last_messages AS (
+      -- Get the most recent message for each conversation
+      SELECT DISTINCT ON (
+        CASE
+          WHEN m.sender_type = 'user' AND m.sender_id = $1 THEN m.recipient_id
+          WHEN m.sender_type = 'agent' AND m.recipient_id = $1 THEN m.sender_id
+        END
+      )
+        CASE
+          WHEN m.sender_type = 'user' AND m.sender_id = $1 THEN m.recipient_id
+          WHEN m.sender_type = 'agent' AND m.recipient_id = $1 THEN m.sender_id
+        END as agent_id,
+        m.content as last_message,
+        m.created_at as last_message_at
+      FROM messages m
+      WHERE (m.sender_type = 'user' AND m.sender_id = $1)
+         OR (m.sender_type = 'agent' AND m.recipient_id = $1)
+      ORDER BY
+        CASE
+          WHEN m.sender_type = 'user' AND m.sender_id = $1 THEN m.recipient_id
+          WHEN m.sender_type = 'agent' AND m.recipient_id = $1 THEN m.sender_id
+        END,
+        m.created_at DESC
+    ),
+    unread_counts AS (
+      -- Count unread messages from each agent
+      SELECT
+        m.sender_id as agent_id,
+        COUNT(*) as unread_count
+      FROM messages m
+      WHERE m.sender_type = 'agent'
+        AND m.recipient_id = $1
+        AND m.read_at IS NULL
+      GROUP BY m.sender_id
+    )
+    SELECT
+      a.id as agent_id,
+      a.name as agent_name,
+      a.avatar_url as agent_avatar,
+      a.status as agent_status,
+      lm.last_message,
+      lm.last_message_at,
+      COALESCE(uc.unread_count, 0)::integer as unread_count
+    FROM conversation_agents ca
+    JOIN agents a ON a.id = ca.agent_id
+    JOIN last_messages lm ON lm.agent_id = ca.agent_id
+    LEFT JOIN unread_counts uc ON uc.agent_id = ca.agent_id
+    WHERE ca.agent_id IS NOT NULL
+    ORDER BY lm.last_message_at DESC
+  `, [userId])
+  return result.rows
 }
 
 // ============= Community Functions =============

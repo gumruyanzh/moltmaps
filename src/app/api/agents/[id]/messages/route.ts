@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAgent, getMessages, createMessage, markMessagesAsRead } from '@/lib/db'
+import { getAgent, getMessages, createMessage, markMessagesAsRead, getUser } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
 import { authenticateAgentRequest } from '@/lib/auth-helpers'
 import { rateLimiter, RATE_LIMITS } from '@/lib/rate-limiter'
@@ -69,6 +69,11 @@ export async function GET(
 //   - token field in request body
 //   - Agent session cookie (for browser-based requests)
 // Rate limited: 60 messages per minute per agent
+//
+// Agent can send messages to:
+//   - Another agent (recipient_id = agent_id)
+//   - A user (recipient_id = user_id, for replying to user messages)
+//   - A community (community_id)
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -85,7 +90,7 @@ export async function POST(
       return NextResponse.json({ error: 'Must specify recipient_id or community_id' }, { status: 400 })
     }
 
-    // Verify sender
+    // Verify sender is an agent
     const sender = await getAgent(senderId)
     if (!sender) {
       return NextResponse.json({ error: 'Sender agent not found' }, { status: 404 })
@@ -114,11 +119,19 @@ export async function POST(
       )
     }
 
-    // Verify recipient if DM
+    // Verify recipient if DM - can be agent OR user
+    let recipientIsUser = false
     if (recipient_id) {
-      const recipient = await getAgent(recipient_id)
-      if (!recipient) {
-        return NextResponse.json({ error: 'Recipient agent not found' }, { status: 404 })
+      // First try to find as agent
+      const recipientAgent = await getAgent(recipient_id)
+      if (!recipientAgent) {
+        // Try to find as user
+        const recipientUser = await getUser(recipient_id)
+        if (recipientUser) {
+          recipientIsUser = true
+        } else {
+          return NextResponse.json({ error: 'Recipient not found' }, { status: 404 })
+        }
       }
     }
 
@@ -127,6 +140,7 @@ export async function POST(
     const message = await createMessage({
       id: messageId,
       sender_id: senderId,
+      sender_type: 'agent',
       recipient_id: recipient_id || undefined,
       community_id: community_id || undefined,
       content,
@@ -135,25 +149,40 @@ export async function POST(
 
     // Send real-time notification via SSE
     if (recipient_id) {
-      // DM notification
-      sseManager.sendToAgent(recipient_id, {
-        type: 'message_received',
-        message_id: message.id,
-        sender_id: senderId,
-        sender_name: sender.name,
-        content: message.content,
-        message_type: message.message_type,
-        created_at: message.created_at,
-      })
+      if (recipientIsUser) {
+        // Send message_received event to user via SSE
+        sseManager.sendToUser(recipient_id, {
+          type: 'message_received',
+          message_id: message.id,
+          sender_id: senderId,
+          sender_name: sender.name,
+          sender_type: 'agent',
+          content: message.content,
+          message_type: message.message_type,
+          created_at: message.created_at,
+        })
+      } else {
+        // DM notification to another agent
+        sseManager.sendToAgent(recipient_id, {
+          type: 'message_received',
+          message_id: message.id,
+          sender_id: senderId,
+          sender_name: sender.name,
+          content: message.content,
+          message_type: message.message_type,
+          created_at: message.created_at,
+        })
 
-      // Send webhook notification to recipient (fire and forget)
-      webhookEvents.messageReceived(
-        recipient_id,
-        senderId,
-        sender.name,
-        message.id,
-        content
-      )
+        // Send webhook notification to recipient agent (fire and forget)
+        webhookEvents.messageReceived(
+          recipient_id,
+          senderId,
+          sender.name,
+          message.id,
+          content,
+          'agent'
+        )
+      }
     } else if (community_id) {
       // Community message notification
       sseManager.sendToCommunity(community_id, {
@@ -165,8 +194,6 @@ export async function POST(
         content: message.content,
         created_at: message.created_at,
       })
-      // Note: Community webhook notifications would require fetching all members
-      // This could be added later with a getCommunityMemberIds function
     }
 
     return NextResponse.json({

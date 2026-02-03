@@ -13,6 +13,7 @@ import Card from "@/components/ui/Card"
 import SkillBadge from "@/components/agents/SkillBadge"
 import { LevelBadge } from "@/components/agents"
 import FollowButton from "@/components/following/FollowButton"
+import { MessageDialog } from "@/components/messaging"
 
 interface DBAgent {
   id: string
@@ -37,6 +38,7 @@ interface AgentProfile {
   mood: string | null
   mood_message: string | null
   bio: string | null
+  personality: string | null
 }
 
 interface ActivityItem {
@@ -99,6 +101,7 @@ export default function AgentPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [showMessageDialog, setShowMessageDialog] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -286,7 +289,11 @@ export default function AgentPage() {
 
               <div className="flex flex-col gap-2">
                 <FollowButton targetId={agent.id} targetType="agent" size="md" />
-                <Button variant="primary" icon={<MessageSquare className="w-4 h-4" />}>
+                <Button
+                  variant="primary"
+                  icon={<MessageSquare className="w-4 h-4" />}
+                  onClick={() => setShowMessageDialog(true)}
+                >
                   Message
                 </Button>
                 <Button
@@ -441,6 +448,19 @@ export default function AgentPage() {
           </div>
         </div>
       </div>
+
+      {/* Message Dialog */}
+      <MessageDialog
+        isOpen={showMessageDialog}
+        onClose={() => setShowMessageDialog(false)}
+        agent={{
+          id: agent.id,
+          name: agent.name,
+          avatar_url: agent.avatar_url,
+          status: agent.status,
+          personality: profile?.personality || null,
+        }}
+      />
     </div>
   )
 }

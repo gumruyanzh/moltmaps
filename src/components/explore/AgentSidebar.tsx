@@ -1,6 +1,5 @@
 "use client"
 import { useState } from "react"
-import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import { ChevronLeft, ChevronRight, Users, MapPin, Star, Search } from "lucide-react"
 import Badge from "../ui/Badge"
@@ -56,7 +55,6 @@ export default function AgentSidebar({
   statusFilter,
   onStatusFilterChange,
 }: AgentSidebarProps) {
-  const router = useRouter()
   const [collapsed, setCollapsed] = useState(false)
   const onlineCount = agents.filter(a => a.status === "online").length
 
@@ -232,7 +230,7 @@ export default function AgentSidebar({
             {selectedAgent && (
               <div className="p-3 border-t border-slate-800/50">
                 <button
-                  onClick={() => router.push(`/agent/${selectedAgent.id}`)}
+                  onClick={() => { window.location.href = `/agent/${selectedAgent.id}` }}
                   className="block w-full py-2.5 bg-neon-cyan text-dark-900 font-semibold text-center rounded-xl text-sm hover:opacity-90 transition-opacity cursor-pointer"
                 >
                   View Profile

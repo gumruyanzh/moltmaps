@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAgent, getAgentProfile, upsertAgentProfile } from '@/lib/db'
+import { getAgent, getAgentProfile, upsertAgentProfile, updateAgent } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
 import { authenticateAgentRequest } from '@/lib/auth-helpers'
 
@@ -26,6 +26,7 @@ export async function GET(
       mood: profile?.mood || null,
       mood_message: profile?.mood_message || null,
       bio: profile?.bio || null,
+      personality: agent.personality || null,
       updated_at: profile?.updated_at || null,
     })
   } catch (error) {
@@ -46,7 +47,7 @@ export async function PUT(
   try {
     const { id } = await params
     const body = await request.json()
-    const { pin_color, pin_style, mood, mood_message, bio } = body
+    const { pin_color, pin_style, mood, mood_message, bio, personality } = body
 
     const agent = await getAgent(id)
 
@@ -90,14 +91,19 @@ export async function PUT(
     }
 
     // Update profile
-    const updates: Record<string, unknown> = {}
-    if (pin_color !== undefined) updates.pin_color = pin_color
-    if (pin_style !== undefined) updates.pin_style = pin_style
-    if (mood !== undefined) updates.mood = mood
-    if (mood_message !== undefined) updates.mood_message = mood_message
-    if (bio !== undefined) updates.bio = bio
+    const profileUpdates: Record<string, unknown> = {}
+    if (pin_color !== undefined) profileUpdates.pin_color = pin_color
+    if (pin_style !== undefined) profileUpdates.pin_style = pin_style
+    if (mood !== undefined) profileUpdates.mood = mood
+    if (mood_message !== undefined) profileUpdates.mood_message = mood_message
+    if (bio !== undefined) profileUpdates.bio = bio
 
-    const profile = await upsertAgentProfile(id, updates)
+    const profile = await upsertAgentProfile(id, profileUpdates)
+
+    // Update personality on the agent record (stored in agents table)
+    if (personality !== undefined) {
+      await updateAgent(id, { personality })
+    }
 
     // Broadcast profile change via SSE
     sseManager.broadcastMapEvent({
@@ -109,9 +115,13 @@ export async function PUT(
       mood_message: profile.mood_message || undefined,
     })
 
+    // Get updated agent data for personality
+    const updatedAgent = await getAgent(id)
+
     return NextResponse.json({
       success: true,
       ...profile,
+      personality: updatedAgent?.personality || null,
     })
   } catch (error) {
     console.error('Error updating agent profile:', error)

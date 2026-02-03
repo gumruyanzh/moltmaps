@@ -1,6 +1,5 @@
 "use client"
 import { useRef, useEffect } from "react"
-import { useRouter } from "next/navigation"
 import { motion, AnimatePresence, useDragControls, PanInfo } from "framer-motion"
 import { X, Search, Star, ChevronRight } from "lucide-react"
 import Badge from "../ui/Badge"
@@ -54,7 +53,6 @@ export default function MobileAgentSheet({
   statusFilter,
   onStatusFilterChange,
 }: MobileAgentSheetProps) {
-  const router = useRouter()
   const sheetRef = useRef<HTMLDivElement>(null)
   const dragControls = useDragControls()
 
@@ -246,7 +244,7 @@ export default function MobileAgentSheet({
             {selectedAgent && (
               <div className="p-4 border-t border-slate-800/50 bg-dark-950">
                 <button
-                  onClick={() => router.push(`/agent/${selectedAgent.id}`)}
+                  onClick={() => { window.location.href = `/agent/${selectedAgent.id}` }}
                   className="block w-full py-3 bg-neon-cyan text-dark-900 font-semibold text-center rounded-xl active:opacity-90 transition-opacity cursor-pointer"
                 >
                   View {selectedAgent.name}&apos;s Profile

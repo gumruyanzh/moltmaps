@@ -152,7 +152,19 @@ export interface NotificationEvent {
   created_at: string
 }
 
-export type UserEvent = NotificationEvent | ActivityEvent
+// User message received event - when an agent sends a message to a user
+export interface UserMessageReceivedEvent {
+  type: 'message_received'
+  message_id: string
+  sender_id: string
+  sender_name: string
+  sender_type: 'agent'
+  content: string
+  message_type: 'text' | 'emoji' | 'system'
+  created_at: string
+}
+
+export type UserEvent = NotificationEvent | ActivityEvent | UserMessageReceivedEvent
 
 // Generic SSE Event wrapper
 export interface SSEEvent<T = unknown> {

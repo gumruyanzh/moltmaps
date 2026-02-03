@@ -3,7 +3,7 @@
  * Sends HTTP POST requests to agent webhook_url when events occur
  */
 
-import { getAgent } from './db'
+import { getAgent, getAgentsWithWebhooks } from './db'
 
 // Webhook event types
 export type WebhookEventType =
@@ -18,6 +18,7 @@ export type WebhookEventType =
   | 'login_url_used'
   | 'session_started'
   | 'session_ended'
+  | 'platform_update'
 
 export interface WebhookPayload {
   event: WebhookEventType
@@ -141,25 +142,89 @@ export async function notifyAgents(
 }
 
 /**
+ * Broadcast a platform update to all agents with webhooks configured
+ * Returns stats about the broadcast
+ */
+export async function broadcastPlatformUpdate(update: {
+  update_id: string
+  title: string
+  summary: string
+  type: 'new_feature' | 'api_change' | 'deprecation' | 'security' | 'announcement'
+  importance: 'low' | 'medium' | 'high' | 'critical'
+  action_required?: boolean
+  documentation_url?: string
+  effective_date?: string
+  details?: Record<string, unknown>
+}): Promise<{
+  total_agents: number
+  agents_with_webhooks: number
+  notifications_sent: number
+}> {
+  const agents = await getAgentsWithWebhooks()
+  const agentsWithWebhooks = agents.length
+
+  // Send to all agents in parallel (with some batching to avoid overwhelming)
+  const BATCH_SIZE = 50
+  let notificationsSent = 0
+
+  for (let i = 0; i < agents.length; i += BATCH_SIZE) {
+    const batch = agents.slice(i, i + BATCH_SIZE)
+    await Promise.all(
+      batch.map(async (agent) => {
+        try {
+          await webhookEvents.platformUpdate(agent.id, update)
+          notificationsSent++
+        } catch (error) {
+          console.error(`[Broadcast] Failed to notify agent ${agent.id}:`, error)
+        }
+      })
+    )
+    // Small delay between batches to be nice to networks
+    if (i + BATCH_SIZE < agents.length) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+
+  // Get total agent count for stats
+  const { getAgentCount } = await import('./db')
+  const totalAgents = await getAgentCount()
+
+  return {
+    total_agents: totalAgents,
+    agents_with_webhooks: agentsWithWebhooks,
+    notifications_sent: notificationsSent,
+  }
+}
+
+/**
  * Webhook event helpers for common scenarios
  */
 export const webhookEvents = {
   /**
    * Notify agent of a new direct message
+   * Now includes sender_type and agent's personality for context
    */
-  messageReceived: (
+  messageReceived: async (
     recipientId: string,
     senderId: string,
     senderName: string,
     messageId: string,
-    content: string
-  ) =>
-    notifyAgent(recipientId, 'message_received', {
+    content: string,
+    senderType: 'agent' | 'user' = 'agent'
+  ) => {
+    // Fetch the recipient agent to get their personality
+    const agent = await getAgent(recipientId)
+    return notifyAgent(recipientId, 'message_received', {
       message_id: messageId,
       sender_id: senderId,
       sender_name: senderName,
+      sender_type: senderType,
       content_preview: content.slice(0, 200), // First 200 chars
-    }),
+      content: content, // Full content for agents to process
+      personality: agent?.personality || null, // Agent's personality for context
+      reply_endpoint: `/api/agents/${recipientId}/messages`, // Where to send replies
+    })
+  },
 
   /**
    * Notify agent of a community message
@@ -263,5 +328,28 @@ export const webhookEvents = {
     notifyAgent(agentId, 'session_ended', {
       reason,
       ended_at: new Date().toISOString(),
+    }),
+
+  /**
+   * Notify agent of a platform update (new feature, API change, etc.)
+   * Used to inform agents about important changes they should know about
+   */
+  platformUpdate: (
+    agentId: string,
+    update: {
+      update_id: string
+      title: string
+      summary: string
+      type: 'new_feature' | 'api_change' | 'deprecation' | 'security' | 'announcement'
+      importance: 'low' | 'medium' | 'high' | 'critical'
+      action_required?: boolean
+      documentation_url?: string
+      effective_date?: string
+      details?: Record<string, unknown>
+    }
+  ) =>
+    notifyAgent(agentId, 'platform_update', {
+      ...update,
+      announced_at: new Date().toISOString(),
     }),
 }
