@@ -975,6 +975,35 @@ export async function markMessagesAsRead(recipientId: string, senderId: string):
   )
 }
 
+// Get unread messages for an agent (for heartbeat polling)
+export async function getAgentPendingMessages(agentId: string): Promise<(Message & { sender_name?: string })[]> {
+  const result = await pool.query(`
+    SELECT m.*,
+           CASE
+             WHEN m.sender_type = 'user' THEN u.name
+             WHEN m.sender_type = 'agent' THEN a.name
+           END as sender_name
+    FROM messages m
+    LEFT JOIN users u ON m.sender_type = 'user' AND m.sender_id = u.id
+    LEFT JOIN agents a ON m.sender_type = 'agent' AND m.sender_id = a.id
+    WHERE m.recipient_id = $1 AND m.read_at IS NULL
+    ORDER BY m.created_at ASC
+  `, [agentId])
+  return result.rows
+}
+
+// Mark specific messages as read by agent (via heartbeat acknowledgment)
+export async function markMessagesAsReadByAgent(agentId: string, messageIds: string[]): Promise<void> {
+  if (messageIds.length === 0) return
+
+  const placeholders = messageIds.map((_, i) => `$${i + 2}`).join(', ')
+  await pool.query(
+    `UPDATE messages SET read_at = CURRENT_TIMESTAMP
+     WHERE recipient_id = $1 AND id IN (${placeholders}) AND read_at IS NULL`,
+    [agentId, ...messageIds]
+  )
+}
+
 // Get list of agents a user has conversations with
 export async function getUserConversations(userId: string): Promise<{
   agent_id: string

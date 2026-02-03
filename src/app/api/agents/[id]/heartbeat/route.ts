@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAgent, updateAgentStatus, incrementAgentActivity, updateAgentLocation, updateAgentLastActive, updateAgentHeartbeat, getAgentPendingUpdates, acknowledgeUpdates } from '@/lib/db'
+import { getAgent, updateAgentStatus, incrementAgentActivity, updateAgentLocation, updateAgentLastActive, updateAgentHeartbeat, getAgentPendingUpdates, acknowledgeUpdates, getAgentPendingMessages, markMessagesAsReadByAgent } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
 import { extractToken, validateToken } from '@/lib/auth-helpers'
 import { rateLimiter, RATE_LIMITS } from '@/lib/rate-limiter'
 import { isAgentApproachingInactivity, getInactivityThreshold } from '@/lib/inactivity-checker'
 
-// Heartbeat interval requirement: 7 days minimum
+// Heartbeat interval requirement: 7 days minimum (for platform updates)
+// Message polling frequency is up to the agent
 const HEARTBEAT_REQUIRED_DAYS = 7
 
 // API for agents to send heartbeat and update their status
@@ -20,7 +21,7 @@ export async function POST(
   try {
     const { id } = await params
     const body = await request.json()
-    const { status, activity_increment, lat, lng, location_name, acknowledge_updates } = body
+    const { status, activity_increment, lat, lng, location_name, acknowledge_updates, acknowledge_messages } = body
 
     // Extract token from header or body
     const token = extractToken(request, body)
@@ -68,8 +69,16 @@ export async function POST(
       await acknowledgeUpdates(id, acknowledge_updates)
     }
 
+    // Acknowledge (mark as read) messages if provided
+    if (acknowledge_messages && Array.isArray(acknowledge_messages) && acknowledge_messages.length > 0) {
+      await markMessagesAsReadByAgent(id, acknowledge_messages)
+    }
+
     // Get pending platform updates for this agent
     const pendingUpdates = await getAgentPendingUpdates(id)
+
+    // Get pending (unread) messages for this agent
+    const pendingMessages = await getAgentPendingMessages(id)
 
     const previousStatus = agent.status
 
@@ -179,11 +188,28 @@ export async function POST(
       }
     }
 
-    // Add heartbeat requirement info
-    response.heartbeat_requirement = {
-      required_interval_days: HEARTBEAT_REQUIRED_DAYS,
-      message: `You must send a heartbeat at least every ${HEARTBEAT_REQUIRED_DAYS} days to stay informed of platform updates.`,
-      last_heartbeat: agent.last_heartbeat_at || agent.last_active_at
+    // Add pending messages
+    if (pendingMessages.length > 0) {
+      response.messages = {
+        count: pendingMessages.length,
+        items: pendingMessages.map(m => ({
+          id: m.id,
+          sender_id: m.sender_id,
+          sender_type: m.sender_type,
+          sender_name: m.sender_name,
+          content: m.content,
+          message_type: m.message_type,
+          created_at: m.created_at,
+          reply_endpoint: `/api/agents/${id}/messages`
+        })),
+        instruction: 'To mark messages as read, include their IDs in acknowledge_messages array in your next heartbeat.'
+      }
+    }
+
+    // Add heartbeat info
+    response.heartbeat_info = {
+      last_heartbeat: agent.last_heartbeat_at || agent.last_active_at,
+      tip: 'Poll frequency is up to you. More frequent = faster message responses.'
     }
 
     return NextResponse.json(response)
