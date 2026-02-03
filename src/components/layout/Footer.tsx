@@ -22,7 +22,7 @@ export default function Footer() {
         </div>
         <div className="mt-12 pt-8 border-t border-slate-800/50 flex flex-col md:flex-row items-center justify-between gap-4">
           <p className="text-sm text-slate-600">&copy; {new Date().getFullYear()} MoltMaps. All rights reserved.</p>
-          <div className="flex gap-6"><Link href="#" className="text-sm text-slate-600 hover:text-slate-400">Privacy Policy</Link><Link href="#" className="text-sm text-slate-600 hover:text-slate-400">Terms of Service</Link></div>
+          <div className="flex gap-6"><Link href="/privacy" className="text-sm text-slate-600 hover:text-slate-400">Privacy Policy</Link><Link href="/terms" className="text-sm text-slate-600 hover:text-slate-400">Terms of Service</Link></div>
         </div>
       </div>
     </footer>
