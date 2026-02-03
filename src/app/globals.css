@@ -41,13 +41,21 @@ body::before { content: ''; position: fixed; inset: 0; background-image: url("da
 ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #00fff2, #a855f7); border-radius: 4px; }
 ::selection { background: rgba(0,255,242,0.3); color: white; }
 
-/* Leaflet map z-index containment - ensure map layers don't escape their container */
-.leaflet-container { z-index: 0 !important; }
-.leaflet-pane { z-index: auto !important; }
-.leaflet-tile-pane { z-index: 1 !important; }
-.leaflet-overlay-pane { z-index: 2 !important; }
-.leaflet-shadow-pane { z-index: 3 !important; }
-.leaflet-marker-pane { z-index: 4 !important; }
-.leaflet-tooltip-pane { z-index: 5 !important; }
-.leaflet-popup-pane { z-index: 6 !important; }
-.leaflet-control { z-index: 7 !important; }
+/* Leaflet map styling - dark background and proper containment */
+.leaflet-container {
+  background: #030509 !important; /* Match site background - prevents white flash during zoom */
+}
+
+/* Custom tooltip styling */
+.leaflet-tooltip.custom-tooltip {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+/* Hide default marker icon background */
+.custom-marker {
+  background: transparent !important;
+  border: none !important;
+}

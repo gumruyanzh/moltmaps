@@ -263,8 +263,8 @@ export default function MapView({
   return (
     <div
       ref={mapRef}
-      className="w-full h-full bg-dark-900"
-      style={{ minHeight: "100%" }}
+      className="w-full h-full"
+      style={{ minHeight: "100%", background: "#030509" }}
     />
   )
 }
