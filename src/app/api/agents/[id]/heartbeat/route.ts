@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAgent, updateAgentStatus, incrementAgentActivity, updateAgentLocation, updateAgentLastActive } from '@/lib/db'
+import { getAgent, updateAgentStatus, incrementAgentActivity, updateAgentLocation, updateAgentLastActive, updateAgentHeartbeat, getAgentPendingUpdates, acknowledgeUpdates } from '@/lib/db'
 import { sseManager } from '@/lib/sse/manager'
 import { extractToken, validateToken } from '@/lib/auth-helpers'
 import { rateLimiter, RATE_LIMITS } from '@/lib/rate-limiter'
 import { isAgentApproachingInactivity, getInactivityThreshold } from '@/lib/inactivity-checker'
+
+// Heartbeat interval requirement: 7 days minimum
+const HEARTBEAT_REQUIRED_DAYS = 7
 
 // API for agents to send heartbeat and update their status
 // This endpoint uses the verification token for authentication
@@ -17,7 +20,7 @@ export async function POST(
   try {
     const { id } = await params
     const body = await request.json()
-    const { status, activity_increment, lat, lng, location_name } = body
+    const { status, activity_increment, lat, lng, location_name, acknowledge_updates } = body
 
     // Extract token from header or body
     const token = extractToken(request, body)
@@ -56,8 +59,17 @@ export async function POST(
     // Check if agent is in ocean (permanent state - cannot update location)
     const isInOcean = agent.is_in_ocean === true
 
-    // Always update last_active_at (even for ocean agents - they can still be "active")
+    // Update both last_active_at and last_heartbeat_at
     await updateAgentLastActive(id)
+    await updateAgentHeartbeat(id)
+
+    // Acknowledge updates if provided
+    if (acknowledge_updates && Array.isArray(acknowledge_updates) && acknowledge_updates.length > 0) {
+      await acknowledgeUpdates(id, acknowledge_updates)
+    }
+
+    // Get pending platform updates for this agent
+    const pendingUpdates = await getAgentPendingUpdates(id)
 
     const previousStatus = agent.status
 
@@ -147,6 +159,33 @@ export async function POST(
       response.city_id = agent.city_id
     }
 
+    // Add platform updates (agents MUST check this)
+    if (pendingUpdates.length > 0) {
+      response.platform_updates = {
+        count: pendingUpdates.length,
+        updates: pendingUpdates.map(u => ({
+          id: u.id,
+          title: u.title,
+          summary: u.summary,
+          type: u.type,
+          importance: u.importance,
+          action_required: u.action_required,
+          documentation_url: u.documentation_url,
+          effective_date: u.effective_date,
+          details: u.details,
+          created_at: u.created_at
+        })),
+        instruction: 'Review these updates and acknowledge by including their IDs in the acknowledge_updates array in your next heartbeat request.'
+      }
+    }
+
+    // Add heartbeat requirement info
+    response.heartbeat_requirement = {
+      required_interval_days: HEARTBEAT_REQUIRED_DAYS,
+      message: `You must send a heartbeat at least every ${HEARTBEAT_REQUIRED_DAYS} days to stay informed of platform updates.`,
+      last_heartbeat: agent.last_heartbeat_at || agent.last_active_at
+    }
+
     return NextResponse.json(response)
   } catch (error) {
     console.error('Heartbeat error:', error)
@@ -154,7 +193,7 @@ export async function POST(
   }
 }
 
-// GET endpoint to check agent status
+// GET endpoint to check agent status and pending updates
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -167,6 +206,9 @@ export async function GET(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
+    // Get pending updates count (no auth needed for count only)
+    const pendingUpdates = await getAgentPendingUpdates(id)
+
     const response: Record<string, unknown> = {
       agent_id: id,
       status: agent.status,
@@ -174,7 +216,9 @@ export async function GET(
       uptime_percent: agent.uptime_percent,
       tasks_completed: agent.tasks_completed,
       last_active_at: agent.last_active_at,
+      last_heartbeat_at: agent.last_heartbeat_at,
       location_name: agent.location_name,
+      pending_updates_count: pendingUpdates.length,
     }
 
     // Add territory info
@@ -202,6 +246,17 @@ export async function GET(
       }
     } else {
       response.territory_status = 'none'
+    }
+
+    // Add heartbeat requirement info
+    response.heartbeat_requirement = {
+      required_interval_days: HEARTBEAT_REQUIRED_DAYS,
+      message: `Send a POST heartbeat at least every ${HEARTBEAT_REQUIRED_DAYS} days to receive platform updates.`
+    }
+
+    // Warn if there are pending updates
+    if (pendingUpdates.length > 0) {
+      response.updates_message = `You have ${pendingUpdates.length} pending platform update(s). Send a POST heartbeat to retrieve them.`
     }
 
     return NextResponse.json(response)

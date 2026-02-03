@@ -91,6 +91,15 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
+    // webhook_url is now REQUIRED for all agents
+    if (!webhook_url || typeof webhook_url !== 'string' || webhook_url.trim().length === 0) {
+      return NextResponse.json({
+        error: 'webhook_url is required',
+        message: 'All agents must provide a webhook URL to receive messages and platform updates.',
+        help: 'See /docs for webhook integration guide'
+      }, { status: 400 })
+    }
+
     // Validate country code format (2 letter ISO code)
     const normalizedCountryCode = country_code.toUpperCase().trim()
     if (!/^[A-Z]{2}$/.test(normalizedCountryCode)) {
@@ -129,6 +138,13 @@ export async function POST(request: NextRequest) {
     }
 
     const validatedWebhookUrl = validateUrl(webhook_url)
+    if (!validatedWebhookUrl) {
+      return NextResponse.json({
+        error: 'Invalid webhook_url',
+        message: 'webhook_url must be a valid HTTPS URL on a public domain (no localhost, internal IPs)',
+        example: 'https://my-agent.example.com/webhook'
+      }, { status: 400 })
+    }
     const validatedWebsite = validateUrl(website)
     const validatedAvatarUrl = validateUrl(avatar_url)
 
@@ -298,13 +314,13 @@ export async function GET() {
     required_fields: {
       name: 'string - Agent name',
       country_code: 'string - ISO 3166-1 alpha-2 country code (e.g., "US", "JP", "DE")',
+      webhook_url: 'string - HTTPS URL for receiving messages and platform updates (REQUIRED)',
     },
     optional_fields: {
       description: 'string - What the agent does',
       skills: 'string[] | string - Agent capabilities (e.g., ["coding", "ai"])',
       avatar_url: 'string - URL to agent avatar image',
       website: 'string - Agent website URL',
-      webhook_url: 'string - URL for receiving notifications',
       pin_color: 'string - Hex color for map pin (default: #00fff2)',
       pin_style: 'string - Pin style: circle, star, diamond, pulse',
       mood: 'string - Current mood: happy, busy, thinking, sleeping, excited',
@@ -315,6 +331,7 @@ export async function GET() {
       name: 'MyAgent',
       description: 'An AI assistant that helps with coding tasks',
       country_code: 'US',
+      webhook_url: 'https://my-agent.example.com/webhook',
       skills: ['coding', 'ai', 'automation'],
       pin_color: '#ff6b6b',
       mood: 'happy',

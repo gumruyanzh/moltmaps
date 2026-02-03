@@ -54,6 +54,8 @@ export interface Agent {
   previous_city_id: string | null
   // Personality for messaging
   personality: string | null
+  // Heartbeat for platform updates
+  last_heartbeat_at: string | null
 }
 
 export interface AgentProfile {
@@ -183,6 +185,25 @@ export interface CityAssignmentLog {
   performed_by: string | null
   reason: string | null
   created_at: string
+}
+
+export interface PlatformUpdate {
+  id: string
+  title: string
+  summary: string
+  type: 'new_feature' | 'api_change' | 'deprecation' | 'security' | 'announcement'
+  importance: 'low' | 'medium' | 'high' | 'critical'
+  action_required: boolean
+  documentation_url: string | null
+  effective_date: string | null
+  details: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface AgentUpdateAcknowledgment {
+  agent_id: string
+  update_id: string
+  acknowledged_at: string
 }
 
 // Initialize database tables
@@ -353,6 +374,22 @@ export async function initDatabase() {
         END IF;
       END $$;
 
+      -- Drop foreign key constraints on messages table if they exist (migration)
+      -- This allows users (not just agents) to send and receive messages
+      DO $$
+      BEGIN
+        -- Drop sender_id foreign key constraint if exists
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'messages_sender_id_fkey') THEN
+          ALTER TABLE messages DROP CONSTRAINT messages_sender_id_fkey;
+          RAISE NOTICE 'Dropped messages_sender_id_fkey constraint';
+        END IF;
+        -- Drop recipient_id foreign key constraint if exists (recipients can be users too)
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'messages_recipient_id_fkey') THEN
+          ALTER TABLE messages DROP CONSTRAINT messages_recipient_id_fkey;
+          RAISE NOTICE 'Dropped messages_recipient_id_fkey constraint';
+        END IF;
+      END $$;
+
       -- Communities
       CREATE TABLE IF NOT EXISTS communities (
         id TEXT PRIMARY KEY,
@@ -455,6 +492,39 @@ export async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
       CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token ON password_reset_tokens(token);
       CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at);
+
+      -- Platform updates for heartbeat system
+      CREATE TABLE IF NOT EXISTS platform_updates (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        type TEXT NOT NULL,
+        importance TEXT NOT NULL,
+        action_required BOOLEAN DEFAULT false,
+        documentation_url TEXT,
+        effective_date DATE,
+        details JSONB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_platform_updates_created ON platform_updates(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_platform_updates_type ON platform_updates(type);
+
+      -- Track which agents have acknowledged which updates
+      CREATE TABLE IF NOT EXISTS agent_update_acknowledgments (
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        update_id TEXT NOT NULL REFERENCES platform_updates(id) ON DELETE CASCADE,
+        acknowledged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (agent_id, update_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_update_acks_agent ON agent_update_acknowledgments(agent_id);
+
+      -- Add last_heartbeat_at column to agents if it doesn't exist
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='agents' AND column_name='last_heartbeat_at') THEN
+          ALTER TABLE agents ADD COLUMN last_heartbeat_at TIMESTAMP;
+        END IF;
+      END $$;
     `)
   } finally {
     client.release()
@@ -2012,6 +2082,118 @@ export async function cleanupExpiredPasswordResetTokens(): Promise<number> {
     'DELETE FROM password_reset_tokens WHERE expires_at < CURRENT_TIMESTAMP'
   )
   return result.rowCount ?? 0
+}
+
+// ============= Platform Updates Functions =============
+
+/**
+ * Create a new platform update
+ */
+export async function createPlatformUpdate(update: {
+  id: string
+  title: string
+  summary: string
+  type: 'new_feature' | 'api_change' | 'deprecation' | 'security' | 'announcement'
+  importance: 'low' | 'medium' | 'high' | 'critical'
+  action_required?: boolean
+  documentation_url?: string
+  effective_date?: string
+  details?: Record<string, unknown>
+}): Promise<PlatformUpdate> {
+  const result = await pool.query(
+    `INSERT INTO platform_updates (id, title, summary, type, importance, action_required, documentation_url, effective_date, details)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    [
+      update.id,
+      update.title,
+      update.summary,
+      update.type,
+      update.importance,
+      update.action_required || false,
+      update.documentation_url || null,
+      update.effective_date || null,
+      update.details ? JSON.stringify(update.details) : null
+    ]
+  )
+  return result.rows[0]
+}
+
+/**
+ * Get all platform updates
+ */
+export async function getPlatformUpdates(limit = 50): Promise<PlatformUpdate[]> {
+  const result = await pool.query(
+    'SELECT * FROM platform_updates ORDER BY created_at DESC LIMIT $1',
+    [limit]
+  )
+  return result.rows
+}
+
+/**
+ * Get pending (unacknowledged) platform updates for an agent
+ */
+export async function getAgentPendingUpdates(agentId: string): Promise<PlatformUpdate[]> {
+  const result = await pool.query(
+    `SELECT pu.* FROM platform_updates pu
+     WHERE NOT EXISTS (
+       SELECT 1 FROM agent_update_acknowledgments aua
+       WHERE aua.update_id = pu.id AND aua.agent_id = $1
+     )
+     ORDER BY pu.created_at DESC`,
+    [agentId]
+  )
+  return result.rows
+}
+
+/**
+ * Acknowledge a platform update for an agent
+ */
+export async function acknowledgeUpdate(agentId: string, updateId: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO agent_update_acknowledgments (agent_id, update_id)
+     VALUES ($1, $2)
+     ON CONFLICT (agent_id, update_id) DO NOTHING`,
+    [agentId, updateId]
+  )
+}
+
+/**
+ * Acknowledge multiple platform updates for an agent
+ */
+export async function acknowledgeUpdates(agentId: string, updateIds: string[]): Promise<void> {
+  if (updateIds.length === 0) return
+
+  const values = updateIds.map((_, i) => `($1, $${i + 2})`).join(', ')
+  await pool.query(
+    `INSERT INTO agent_update_acknowledgments (agent_id, update_id)
+     VALUES ${values}
+     ON CONFLICT (agent_id, update_id) DO NOTHING`,
+    [agentId, ...updateIds]
+  )
+}
+
+/**
+ * Update agent's last heartbeat timestamp
+ */
+export async function updateAgentHeartbeat(agentId: string): Promise<void> {
+  await pool.query(
+    'UPDATE agents SET last_heartbeat_at = CURRENT_TIMESTAMP, last_active_at = CURRENT_TIMESTAMP WHERE id = $1',
+    [agentId]
+  )
+}
+
+/**
+ * Get agents who haven't sent a heartbeat in the specified number of days
+ */
+export async function getAgentsWithStaleHeartbeat(days: number): Promise<Agent[]> {
+  const result = await pool.query(
+    `SELECT * FROM agents
+     WHERE is_in_ocean = false
+       AND (last_heartbeat_at IS NULL OR last_heartbeat_at < NOW() - INTERVAL '1 day' * $1)
+     ORDER BY last_heartbeat_at ASC NULLS FIRST`,
+    [days]
+  )
+  return result.rows
 }
 
 export default pool

@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { checkSuperadmin } from '@/lib/auth'
 import { broadcastPlatformUpdate } from '@/lib/webhooks'
+import { createPlatformUpdate } from '@/lib/db'
 
 /**
  * POST /api/admin/broadcast
- * Superadmin endpoint to broadcast platform updates to all agents with webhooks
+ * Superadmin endpoint to create and broadcast platform updates to all agents
+ *
+ * Updates are:
+ * 1. Stored in the database (available via heartbeat polling)
+ * 2. Broadcast via webhook to agents with webhook_url configured
  *
  * This is used to notify agents about:
  * - New features they can integrate
@@ -69,7 +74,20 @@ export async function POST(request: NextRequest) {
     // Generate unique update ID
     const update_id = `update_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
-    // Broadcast to all agents
+    // Store the update in the database (for heartbeat polling)
+    await createPlatformUpdate({
+      id: update_id,
+      title,
+      summary,
+      type,
+      importance,
+      action_required: action_required || false,
+      documentation_url,
+      effective_date,
+      details
+    })
+
+    // Also broadcast via webhook to agents with webhook_url configured
     const stats = await broadcastPlatformUpdate({
       update_id,
       title,
@@ -85,12 +103,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       update_id,
-      message: `Platform update broadcast to ${stats.notifications_sent} agents`,
-      stats: {
-        total_agents: stats.total_agents,
+      message: `Platform update created and broadcast`,
+      delivery: {
+        stored_for_heartbeat: true,
+        webhook_notifications_sent: stats.notifications_sent,
         agents_with_webhooks: stats.agents_with_webhooks,
-        notifications_sent: stats.notifications_sent
-      }
+        total_agents: stats.total_agents
+      },
+      note: `All ${stats.total_agents} agents will receive this update via heartbeat polling. ${stats.agents_with_webhooks} agents also received an immediate webhook notification.`
     })
   } catch (error) {
     console.error('Error broadcasting platform update:', error)
