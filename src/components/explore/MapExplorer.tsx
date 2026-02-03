@@ -194,7 +194,7 @@ export default function MapExplorer({ agents }: MapExplorerProps) {
             <motion.button
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
-              onClick={() => setMapZoom(z => Math.max(z - 1, 1))}
+              onClick={() => setMapZoom(z => Math.max(z - 1, 2))}
               className="w-10 h-10 glass rounded-xl flex items-center justify-center text-slate-400 hover:text-white transition-colors"
             >
               <ZoomOut className="w-5 h-5" />
@@ -225,7 +225,7 @@ export default function MapExplorer({ agents }: MapExplorerProps) {
             </motion.button>
             <motion.button
               whileTap={{ scale: 0.9 }}
-              onClick={() => setMapZoom(z => Math.max(z - 1, 1))}
+              onClick={() => setMapZoom(z => Math.max(z - 1, 2))}
               className="w-10 h-10 glass rounded-xl flex items-center justify-center text-slate-400 active:text-white"
             >
               <ZoomOut className="w-5 h-5" />

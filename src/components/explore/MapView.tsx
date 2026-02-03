@@ -109,6 +109,8 @@ export default function MapView({
       zoom,
       zoomControl: false,
       attributionControl: false,
+      minZoom: 2, // Prevent zooming out too far (no map repetition)
+      maxBoundsViscosity: 1.0, // Prevent panning outside world bounds
     })
 
     leaflet.tileLayer(
