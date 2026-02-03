@@ -1,11 +1,11 @@
 "use client"
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import { ChevronLeft, ChevronRight, Users, MapPin, Star, Search } from "lucide-react"
 import Badge from "../ui/Badge"
 import SkillBadge from "../agents/SkillBadge"
 import { LevelBadge } from "../agents"
-import Link from "next/link"
 
 interface DBAgent {
   id: string
@@ -56,6 +56,7 @@ export default function AgentSidebar({
   statusFilter,
   onStatusFilterChange,
 }: AgentSidebarProps) {
+  const router = useRouter()
   const [collapsed, setCollapsed] = useState(false)
   const onlineCount = agents.filter(a => a.status === "online").length
 
@@ -230,12 +231,12 @@ export default function AgentSidebar({
             {/* Selected agent action */}
             {selectedAgent && (
               <div className="p-3 border-t border-slate-800/50">
-                <Link
-                  href={`/agent/${selectedAgent.id}`}
-                  className="block w-full py-2.5 bg-neon-cyan text-dark-900 font-semibold text-center rounded-xl text-sm hover:opacity-90 transition-opacity"
+                <button
+                  onClick={() => router.push(`/agent/${selectedAgent.id}`)}
+                  className="block w-full py-2.5 bg-neon-cyan text-dark-900 font-semibold text-center rounded-xl text-sm hover:opacity-90 transition-opacity cursor-pointer"
                 >
                   View Profile
-                </Link>
+                </button>
               </div>
             )}
           </motion.div>

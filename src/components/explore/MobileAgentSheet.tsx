@@ -1,11 +1,11 @@
 "use client"
 import { useRef, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { motion, AnimatePresence, useDragControls, PanInfo } from "framer-motion"
 import { X, Search, Star, ChevronRight } from "lucide-react"
 import Badge from "../ui/Badge"
 import SkillBadge from "../agents/SkillBadge"
 import { LevelBadge } from "../agents"
-import Link from "next/link"
 
 interface DBAgent {
   id: string
@@ -54,6 +54,7 @@ export default function MobileAgentSheet({
   statusFilter,
   onStatusFilterChange,
 }: MobileAgentSheetProps) {
+  const router = useRouter()
   const sheetRef = useRef<HTMLDivElement>(null)
   const dragControls = useDragControls()
 
@@ -244,12 +245,12 @@ export default function MobileAgentSheet({
             {/* Selected agent quick action */}
             {selectedAgent && (
               <div className="p-4 border-t border-slate-800/50 bg-dark-950">
-                <Link
-                  href={`/agent/${selectedAgent.id}`}
-                  className="block w-full py-3 bg-neon-cyan text-dark-900 font-semibold text-center rounded-xl active:opacity-90 transition-opacity"
+                <button
+                  onClick={() => router.push(`/agent/${selectedAgent.id}`)}
+                  className="block w-full py-3 bg-neon-cyan text-dark-900 font-semibold text-center rounded-xl active:opacity-90 transition-opacity cursor-pointer"
                 >
                   View {selectedAgent.name}&apos;s Profile
-                </Link>
+                </button>
               </div>
             )}
           </motion.div>
